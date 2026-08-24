@@ -1,0 +1,69 @@
+name: Deploy to Lambda
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-pipeline:
+    if: contains(github.event.head_commit.modified, 'src/pipeline/') || contains(github.event.head_commit.added, 'src/pipeline/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::173249517772:role/bizcall-github-deploy-role
+          aws-region: ap-northeast-2
+
+      - name: Install dependencies
+        run: |
+          pip install -r src/pipeline/requirements.txt -t src/pipeline/package
+
+      - name: Package function
+        run: |
+          cd src/pipeline/package
+          cp ../main.py .
+          zip -r ../../../pipeline.zip .
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name bizcall-pipeline \
+            --zip-file fileb://pipeline.zip
+
+  deploy-api:
+    if: contains(github.event.head_commit.modified, 'src/api/') || contains(github.event.head_commit.added, 'src/api/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::173249517772:role/bizcall-github-deploy-role
+          aws-region: ap-northeast-2
+
+      - name: Install dependencies
+        run: |
+          pip install -r src/api/requirements.txt -t src/api/package
+
+      - name: Package function
+        run: |
+          cd src/api/package
+          cp ../main.py .
+          zip -r ../../../api.zip .
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name bizcall-api \
+            --zip-file fileb://api.zip
