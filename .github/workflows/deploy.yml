@@ -10,8 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      pipeline: ${{ steps.filter.outputs.pipeline }}
+      api: ${{ steps.filter.outputs.api }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            pipeline:
+              - 'src/pipeline/**'
+            api:
+              - 'src/api/**'
+
   deploy-pipeline:
-    if: contains(github.event.head_commit.modified, 'src/pipeline/') || contains(github.event.head_commit.added, 'src/pipeline/')
+    needs: detect-changes
+    if: needs.detect-changes.outputs.pipeline == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -40,7 +57,8 @@ jobs:
             --zip-file fileb://pipeline.zip
 
   deploy-api:
-    if: contains(github.event.head_commit.modified, 'src/api/') || contains(github.event.head_commit.added, 'src/api/')
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
