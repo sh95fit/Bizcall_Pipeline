@@ -32,9 +32,11 @@ def transcribe_groq(file_path: str) -> str:
 
 
 def transcribe(file_path: str) -> str | None:
-    """STT_PROVIDER 환경변수에 따라 STT 제공자 선택"""
     if STT_PROVIDER == "groq":
         return transcribe_groq(file_path)
+    elif STT_PROVIDER == "skip":
+        print("STT_PROVIDER=skip: STT 단계 건너뜀 (Gemini 오디오 직접 처리 모드)")
+        return None
     elif STT_PROVIDER == "whisper_lambda":
         raise NotImplementedError("whisper_lambda STT provider is not yet implemented.")
     else:
@@ -62,16 +64,46 @@ def build_prompt(transcript: str, categories: list) -> str:
 반드시 JSON만 출력하세요. 마크다운 코드블록 없이 순수 JSON만."""
 
 
+def build_audio_prompt(categories: list) -> str:
+    category_list = ", ".join([c["name"] for c in categories])
+    return f"""첨부된 오디오는 비즈니스 전화 통화 녹음입니다.
+오디오를 직접 듣고 아래 항목을 JSON 형식으로 분석하세요:
+- transcript: 전체 통화 내용 텍스트 변환 (한국어)
+- category: 반드시 다음 중 하나만 선택 [{category_list}]
+- summary: 통화 내용 3줄 요약 (한국어)
+- sentiment: 다음 중 하나 [positive, neutral, negative]
+- keywords: 핵심 키워드 최대 5개 (배열)
+- action_required: 후속 조치 필요 여부 (true/false)
+- action_memo: action_required가 true일 경우 필요한 조치 내용, 아니면 빈 문자열
+
+반드시 JSON만 출력하세요. 마크다운 코드블록 없이 순수 JSON만."""
+
+
 def analyze_gemini(transcript: str, categories: list) -> dict:
     from google import genai
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-
-    # Gemini가 오디오를 직접 처리하는 경우 STT 스킵 가능 (추후 STEP 21)
     response = client.models.generate_content(
         model="gemini-3.6-flash",
         contents=build_prompt(transcript, categories),
     )
     return json.loads(response.text.strip())
+
+
+def analyze_gemini_audio(file_path: str, categories: list) -> dict:
+    """Gemini가 오디오를 직접 처리 – STT 단계 스킵"""
+    from google import genai
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    with open(file_path, "rb") as f:
+        audio_data = f.read()
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=[
+            {"inline_data": {"mime_type": "audio/mp4", "data": audio_data}},
+            build_audio_prompt(categories),
+        ],
+    )
+    result = json.loads(response.text.strip())
+    return result
 
 
 def analyze_claude(transcript: str, categories: list) -> dict:
@@ -82,14 +114,22 @@ def analyze_groq(transcript: str, categories: list) -> dict:
     raise NotImplementedError("Groq AI provider is not yet implemented.")
 
 
-def analyze(transcript: str, categories: list) -> dict:
-    """AI_PROVIDER 환경변수에 따라 AI 제공자 선택"""
-    if AI_PROVIDER == "gemini":
-        return analyze_gemini(transcript, categories)
+def analyze(transcript: str | None, file_path: str, categories: list) -> tuple[str | None, dict]:
+    """
+    AI_PROVIDER + STT_PROVIDER 조합에 따라 분석 방식 결정
+    반환: (transcript, analysis_dict)
+    """
+    if AI_PROVIDER == "gemini" and STT_PROVIDER == "skip":
+        print("Gemini 오디오 직접 처리 모드")
+        result = analyze_gemini_audio(file_path, categories)
+        transcript = result.pop("transcript", None)
+        return transcript, result
+    elif AI_PROVIDER == "gemini":
+        return transcript, analyze_gemini(transcript, categories)
     elif AI_PROVIDER == "claude":
-        return analyze_claude(transcript, categories)
+        return transcript, analyze_claude(transcript, categories)
     elif AI_PROVIDER == "groq":
-        return analyze_groq(transcript, categories)
+        return transcript, analyze_groq(transcript, categories)
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {AI_PROVIDER}")
 
@@ -158,13 +198,14 @@ def lambda_handler(event, context):
             s3.download_fileobj(bucket, key, tmp)
             tmp_path = tmp.name
 
-        # STT
+        # STT (STT_PROVIDER=skip 이면 None 반환)
         transcript = transcribe(tmp_path)
-        print("Transcript:", transcript[:200] if transcript else "None")
+        if transcript:
+            print("Transcript:", transcript[:200])
 
         # AI 분석
         categories = get_active_categories()
-        analysis = analyze(transcript, categories)
+        transcript, analysis = analyze(transcript, tmp_path, categories)
         print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
         # category_id 매핑
