@@ -46,10 +46,11 @@ jobs:
 
       - name: Package function
         run: |
+          mkdir -p src/pipeline/package
+          cp src/pipeline/main.py src/pipeline/package/
+          cp -r src/pipeline/stt src/pipeline/package/stt
+          cp -r src/pipeline/ai src/pipeline/package/ai
           cd src/pipeline/package
-          cp ../main.py .
-          cp -r ../stt ./stt
-          cp -r ../ai ./ai
           zip -r ../../../pipeline.zip .
 
       - name: Deploy to Lambda
