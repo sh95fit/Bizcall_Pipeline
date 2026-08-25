@@ -51,7 +51,7 @@ def analyze_with_gemini(transcript: str, categories: list) -> dict:
 반드시 JSON만 출력하세요. 마크다운 코드블록 없이 순수 JSON만."""
 
     response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.6-flash",
         contents=prompt,
     )
     return json.loads(response.text.strip())
