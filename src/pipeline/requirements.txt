@@ -1,0 +1,4 @@
+groq
+google-genai
+supabase
+boto3
