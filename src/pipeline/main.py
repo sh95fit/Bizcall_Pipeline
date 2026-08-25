@@ -125,3 +125,4 @@ def lambda_handler(event, context):
         print("Saved to voc_records successfully.")
 
     return {"statusCode": 200, "body": "bizcall-pipeline completed"}
+
