@@ -158,3 +158,4 @@ def lambda_handler(event, context):
         return handle_credentials(body)
 
     return response(404, {"error": "존재하지 않는 엔드포인트입니다"})
+ 

@@ -1,2 +1,2 @@
-psycopg2-binary==2.9.9
+supabase==2.15.1
 boto3==1.34.0

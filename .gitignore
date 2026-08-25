@@ -9,3 +9,4 @@ venv/
 supabase/.temp/
 supabase/.branches/
 
+*.m4a
