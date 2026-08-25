@@ -1,16 +1,45 @@
 import json
 import os
 import tempfile
+from datetime import datetime
 import boto3
 from groq import Groq
 from google import genai
 from supabase import create_client
 
-# 클라이언트 초기화
 s3 = boto3.client("s3")
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET_KEY"])
+
+
+def parse_s3_key(key: str) -> dict:
+    try:
+        filename = key.split("/")[-1].replace(".m4a", "")
+        parts = filename.split("_")
+        timestamp_str = parts[-1]
+        caller_number = parts[-2]
+        direction = parts[-3]
+        phone_id = "_".join(parts[:-3])
+        call_started_at = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").isoformat()
+        return {
+            "phone_id": phone_id,
+            "direction": direction,
+            "caller_number": caller_number,
+            "call_started_at": call_started_at,
+        }
+    except Exception as e:
+        print(f"parse_s3_key failed: {e}")
+        return {}
+
+
+def get_phone_record(device_id: str) -> dict:
+    try:
+        res = supabase.table("phones").select("id, name").eq("device_id", device_id).eq("is_active", True).single().execute()
+        return res.data or {}
+    except Exception as e:
+        print(f"get_phone_record failed: {e}")
+        return {}
 
 
 def get_active_categories():
@@ -22,8 +51,7 @@ def transcribe_audio(file_path: str) -> str:
     file_size = os.path.getsize(file_path)
     print(f"Audio file size: {file_size} bytes")
     if file_size == 0:
-        raise ValueError("Downloaded audio file is empty. Check S3 key and permissions.")
-
+        raise ValueError("Downloaded audio file is empty.")
     with open(file_path, "rb") as f:
         result = groq_client.audio.transcriptions.create(
             model="whisper-large-v3-turbo",
@@ -67,6 +95,14 @@ def lambda_handler(event, context):
         key = s3_event["s3"]["object"]["key"]
         print(f"Processing s3://{bucket}/{key}")
 
+        # 파일명 파싱
+        meta = parse_s3_key(key)
+        print("Parsed metadata:", meta)
+
+        # phone 레코드 조회
+        phone = get_phone_record(meta.get("phone_id", ""))
+        print("Phone record:", phone)
+
         # S3 다운로드
         with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
             s3.download_fileobj(bucket, key, tmp)
@@ -89,6 +125,11 @@ def lambda_handler(event, context):
 
         # Supabase 저장
         supabase.table("voc_records").insert({
+            "phone_id": phone.get("id"),
+            "phone_name": phone.get("name"),
+            "caller_number": meta.get("caller_number"),
+            "call_direction": meta.get("direction"),
+            "call_started_at": meta.get("call_started_at"),
             "s3_key": key,
             "transcript": transcript,
             "summary": analysis.get("summary"),
