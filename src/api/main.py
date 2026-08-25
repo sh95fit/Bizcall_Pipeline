@@ -1,28 +1,20 @@
 import json
 import os
-import psycopg2
 import boto3
+from supabase import create_client, Client
 
 # 환경변수
-DB_HOST = os.environ["DB_HOST"]
-DB_NAME = os.environ["DB_NAME"]
-DB_USER = os.environ["DB_USER"]
-DB_PASSWORD = os.environ["DB_PASSWORD"]
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 S3_BUCKET = os.environ["S3_BUCKET"]
 S3_UPLOAD_ROLE_ARN = os.environ["S3_UPLOAD_ROLE_ARN"]
 AWS_REGION = "ap-northeast-2"
 
 CREDENTIALS_DURATION_SEC = 3600
 
-def get_db_connection():
-    return psycopg2.connect(
-        host=DB_HOST,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        port=5432,
-        connect_timeout=5
-    )
+# Supabase 클라이언트 초기화 (Lambda 컨테이너 재사용 시 재생성 방지)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+
 
 def response(status_code, body):
     return {
@@ -31,7 +23,13 @@ def response(status_code, body):
         "body": json.dumps(body, ensure_ascii=False)
     }
 
+
 def handle_register(body):
+    """
+    POST /phones/register
+    body: { "token": "...", "device_id": "..." }
+    → phones 테이블에서 token 조회 → phone_id, name, is_active 반환
+    """
     token = body.get("token", "").strip()
     device_id = body.get("device_id", "").strip()
 
@@ -39,37 +37,32 @@ def handle_register(body):
         return response(400, {"error": "token과 device_id는 필수입니다"})
 
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # token으로 phones 테이블 조회
+        result = supabase.table("phones") \
+            .select("id, name, is_active") \
+            .eq("token", token) \
+            .single() \
+            .execute()
 
-        cur.execute(
-            "SELECT id, name, is_active FROM phones WHERE token = %s",
-            (token,)
-        )
-        row = cur.fetchone()
-
-        if not row:
+        if not result.data:
             return response(401, {"error": "유효하지 않은 토큰입니다"})
 
-        phone_id, name, is_active = row
+        phone = result.data
+        phone_id = phone["id"]
+        name = phone["name"]
+        is_active = phone["is_active"]
 
         if not is_active:
             return response(403, {"error": "비활성화된 업무폰입니다"})
 
-        cur.execute(
-            """
-            UPDATE phones
-            SET last_seen_at = NOW(), device_id = %s
-            WHERE id = %s
-            """,
-            (device_id, str(phone_id))
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        # last_seen_at 및 device_id 업데이트
+        supabase.table("phones") \
+            .update({"last_seen_at": "now()", "device_id": device_id}) \
+            .eq("id", phone_id) \
+            .execute()
 
         return response(200, {
-            "phone_id": str(phone_id),
+            "phone_id": phone_id,
             "name": name,
             "is_active": is_active
         })
@@ -80,6 +73,11 @@ def handle_register(body):
 
 
 def handle_credentials(body):
+    """
+    POST /phones/credentials
+    body: { "phone_id": "...", "token": "..." }
+    → token + phone_id 검증 → STS 임시 자격증명 발급
+    """
     phone_id = body.get("phone_id", "").strip()
     token = body.get("token", "").strip()
 
@@ -87,21 +85,18 @@ def handle_credentials(body):
         return response(400, {"error": "phone_id와 token은 필수입니다"})
 
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # phone_id + token 동시 검증
+        result = supabase.table("phones") \
+            .select("is_active") \
+            .eq("id", phone_id) \
+            .eq("token", token) \
+            .single() \
+            .execute()
 
-        cur.execute(
-            "SELECT is_active FROM phones WHERE id = %s AND token = %s",
-            (phone_id, token)
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if not row:
+        if not result.data:
             return response(401, {"error": "인증 정보가 올바르지 않습니다"})
 
-        is_active = row[0]
+        is_active = result.data["is_active"]
         if not is_active:
             return response(403, {"error": "비활성화된 업무폰입니다"})
 
@@ -109,6 +104,7 @@ def handle_credentials(body):
         print(f"handle_credentials db error: {e}")
         return response(500, {"error": "서버 오류가 발생했습니다"})
 
+    # STS 임시 자격증명 발급
     try:
         sts = boto3.client("sts", region_name=AWS_REGION)
 
@@ -158,7 +154,7 @@ def lambda_handler(event, context):
     if path == "/phones/register" and http_method == "POST":
         return handle_register(body)
 
-    if path == "/phones/credentials" and http_method in ("GET", "POST"):
+    if path == "/phones/credentials" and http_method == "POST":
         return handle_credentials(body)
 
     return response(404, {"error": "존재하지 않는 엔드포인트입니다"})
