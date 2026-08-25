@@ -14,24 +14,26 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET
 
 
 def get_active_categories():
-    """categories 테이블에서 최상위 카테고리 목록 조회"""
     res = supabase.table("categories").select("id, name").is_("parent_id", None).eq("is_active", True).order("sort_order").execute()
-    return res.data  # [{"id": "...", "name": "영업"}, ...]
+    return res.data
 
 
 def transcribe_audio(file_path: str) -> str:
-    """Groq Whisper로 음성 → 텍스트 변환"""
+    file_size = os.path.getsize(file_path)
+    print(f"Audio file size: {file_size} bytes")
+    if file_size == 0:
+        raise ValueError("Downloaded audio file is empty. Check S3 key and permissions.")
+
     with open(file_path, "rb") as f:
         result = groq_client.audio.transcriptions.create(
             model="whisper-large-v3-turbo",
-            file=f,
+            file=(os.path.basename(file_path), f, "audio/mp4"),
             language="ko",
         )
     return result.text
 
 
 def analyze_with_gemini(transcript: str, categories: list) -> dict:
-    """Gemini로 통화 내용 분석"""
     category_list = ", ".join([c["name"] for c in categories])
     prompt = f"""다음은 비즈니스 전화 통화 내용입니다.
 
@@ -59,14 +61,13 @@ def lambda_handler(event, context):
     print("bizcall-pipeline received event:", json.dumps(event))
 
     for record in event.get("Records", []):
-        # SQS → S3 이벤트 파싱
         body = json.loads(record["body"])
         s3_event = body.get("Records", [{}])[0]
         bucket = s3_event["s3"]["bucket"]["name"]
         key = s3_event["s3"]["object"]["key"]
         print(f"Processing s3://{bucket}/{key}")
 
-        # S3에서 오디오 다운로드
+        # S3 다운로드
         with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
             s3.download_fileobj(bucket, key, tmp)
             tmp_path = tmp.name
@@ -75,10 +76,8 @@ def lambda_handler(event, context):
         transcript = transcribe_audio(tmp_path)
         print("Transcript:", transcript[:200])
 
-        # 카테고리 목록 조회
-        categories = get_active_categories()
-
         # Gemini 분석
+        categories = get_active_categories()
         analysis = analyze_with_gemini(transcript, categories)
         print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
