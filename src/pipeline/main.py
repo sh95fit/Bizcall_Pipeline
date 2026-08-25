@@ -4,139 +4,13 @@ import tempfile
 from datetime import datetime
 import boto3
 from supabase import create_client
+from stt import get_stt_provider
+from ai import get_ai_provider
 
 s3 = boto3.client("s3")
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET_KEY"])
 
-STT_PROVIDER = os.environ.get("STT_PROVIDER", "groq")
-AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini")
 
-
-# ──────────────────────────────────────────
-# STT
-# ──────────────────────────────────────────
-def transcribe_groq(file_path: str) -> str:
-    from groq import Groq
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
-    file_size = os.path.getsize(file_path)
-    print(f"Audio file size: {file_size} bytes")
-    if file_size == 0:
-        raise ValueError("Downloaded audio file is empty.")
-    with open(file_path, "rb") as f:
-        result = client.audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
-            file=(os.path.basename(file_path), f, "audio/mp4"),
-            language="ko",
-        )
-    return result.text
-
-
-def transcribe(file_path: str) -> str | None:
-    if STT_PROVIDER == "groq":
-        return transcribe_groq(file_path)
-    elif STT_PROVIDER == "skip":
-        print("STT_PROVIDER=skip: STT 단계 건너뜀 (Gemini 오디오 직접 처리 모드)")
-        return None
-    elif STT_PROVIDER == "whisper_lambda":
-        raise NotImplementedError("whisper_lambda STT provider is not yet implemented.")
-    else:
-        raise ValueError(f"Unknown STT_PROVIDER: {STT_PROVIDER}")
-
-
-# ──────────────────────────────────────────
-# AI 분석
-# ──────────────────────────────────────────
-def build_prompt(transcript: str, categories: list) -> str:
-    category_list = ", ".join([c["name"] for c in categories])
-    return f"""다음은 비즈니스 전화 통화 내용입니다.
-
-[통화 내용]
-{transcript}
-
-아래 항목을 JSON 형식으로 분석하세요:
-- category: 반드시 다음 중 하나만 선택 [{category_list}]
-- summary: 통화 내용 3줄 요약 (한국어)
-- sentiment: 다음 중 하나 [positive, neutral, negative]
-- keywords: 핵심 키워드 최대 5개 (배열)
-- action_required: 후속 조치 필요 여부 (true/false)
-- action_memo: action_required가 true일 경우 필요한 조치 내용, 아니면 빈 문자열
-
-반드시 JSON만 출력하세요. 마크다운 코드블록 없이 순수 JSON만."""
-
-
-def build_audio_prompt(categories: list) -> str:
-    category_list = ", ".join([c["name"] for c in categories])
-    return f"""첨부된 오디오는 비즈니스 전화 통화 녹음입니다.
-오디오를 직접 듣고 아래 항목을 JSON 형식으로 분석하세요:
-- transcript: 전체 통화 내용 텍스트 변환 (한국어)
-- category: 반드시 다음 중 하나만 선택 [{category_list}]
-- summary: 통화 내용 3줄 요약 (한국어)
-- sentiment: 다음 중 하나 [positive, neutral, negative]
-- keywords: 핵심 키워드 최대 5개 (배열)
-- action_required: 후속 조치 필요 여부 (true/false)
-- action_memo: action_required가 true일 경우 필요한 조치 내용, 아니면 빈 문자열
-
-반드시 JSON만 출력하세요. 마크다운 코드블록 없이 순수 JSON만."""
-
-
-def analyze_gemini(transcript: str, categories: list) -> dict:
-    from google import genai
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=build_prompt(transcript, categories),
-    )
-    return json.loads(response.text.strip())
-
-
-def analyze_gemini_audio(file_path: str, categories: list) -> dict:
-    """Gemini가 오디오를 직접 처리 – STT 단계 스킵"""
-    from google import genai
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    with open(file_path, "rb") as f:
-        audio_data = f.read()
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=[
-            {"inline_data": {"mime_type": "audio/mp4", "data": audio_data}},
-            build_audio_prompt(categories),
-        ],
-    )
-    result = json.loads(response.text.strip())
-    return result
-
-
-def analyze_claude(transcript: str, categories: list) -> dict:
-    raise NotImplementedError("Claude AI provider is not yet implemented.")
-
-
-def analyze_groq(transcript: str, categories: list) -> dict:
-    raise NotImplementedError("Groq AI provider is not yet implemented.")
-
-
-def analyze(transcript: str | None, file_path: str, categories: list) -> tuple[str | None, dict]:
-    """
-    AI_PROVIDER + STT_PROVIDER 조합에 따라 분석 방식 결정
-    반환: (transcript, analysis_dict)
-    """
-    if AI_PROVIDER == "gemini" and STT_PROVIDER == "skip":
-        print("Gemini 오디오 직접 처리 모드")
-        result = analyze_gemini_audio(file_path, categories)
-        transcript = result.pop("transcript", None)
-        return transcript, result
-    elif AI_PROVIDER == "gemini":
-        return transcript, analyze_gemini(transcript, categories)
-    elif AI_PROVIDER == "claude":
-        return transcript, analyze_claude(transcript, categories)
-    elif AI_PROVIDER == "groq":
-        return transcript, analyze_groq(transcript, categories)
-    else:
-        raise ValueError(f"Unknown AI_PROVIDER: {AI_PROVIDER}")
-
-
-# ──────────────────────────────────────────
-# 유틸
-# ──────────────────────────────────────────
 def parse_s3_key(key: str) -> dict:
     try:
         filename = key.split("/")[-1].replace(".m4a", "")
@@ -171,12 +45,22 @@ def get_active_categories() -> list:
     return res.data
 
 
-# ──────────────────────────────────────────
-# Lambda 핸들러
-# ──────────────────────────────────────────
 def lambda_handler(event, context):
     print("bizcall-pipeline received event:", json.dumps(event))
-    print(f"STT_PROVIDER={STT_PROVIDER}, AI_PROVIDER={AI_PROVIDER}")
+
+    stt = get_stt_provider()
+    ai = get_ai_provider()
+
+    stt_provider_name = os.environ.get("STT_PROVIDER", "groq")
+    ai_provider_name = os.environ.get("AI_PROVIDER", "gemini")
+    print(f"STT_PROVIDER={stt_provider_name}, AI_PROVIDER={ai_provider_name}")
+
+    # STT=skip인데 AI가 오디오 직접 처리 미지원이면 에러
+    if stt is None and not ai.supports_audio():
+        raise ValueError(
+            f"STT_PROVIDER=skip이지만 AI_PROVIDER({ai_provider_name})가 "
+            f"오디오 직접 처리를 지원하지 않습니다. STT_PROVIDER를 설정하세요."
+        )
 
     for record in event.get("Records", []):
         body = json.loads(record["body"])
@@ -198,14 +82,21 @@ def lambda_handler(event, context):
             s3.download_fileobj(bucket, key, tmp)
             tmp_path = tmp.name
 
-        # STT (STT_PROVIDER=skip 이면 None 반환)
-        transcript = transcribe(tmp_path)
-        if transcript:
+        # STT
+        transcript = None
+        if stt:
+            transcript = stt.transcribe(tmp_path)
             print("Transcript:", transcript[:200])
+        else:
+            print("STT_PROVIDER=skip → AI 오디오 직접 처리 모드")
 
         # AI 분석
         categories = get_active_categories()
-        transcript, analysis = analyze(transcript, tmp_path, categories)
+        transcript, analysis = ai.analyze(
+            categories=categories,
+            transcript=transcript,
+            file_path=tmp_path if not transcript else None,
+        )
         print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
         # category_id 매핑
