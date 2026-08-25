@@ -48,6 +48,8 @@ jobs:
         run: |
           cd src/pipeline/package
           cp ../main.py .
+          cp -r ../stt .
+          cp -r ../ai .
           zip -r ../../../pipeline.zip .
 
       - name: Deploy to Lambda
