@@ -33,7 +33,12 @@ def parse_s3_key(key: str) -> dict:
 
 def get_phone_record(device_id: str) -> dict:
     try:
-        res = supabase.table("phones").select("id, name").eq("device_id", device_id).eq("is_active", True).single().execute()
+        res = supabase.table("phones") \
+            .select("id, name") \
+            .eq("device_id", device_id) \
+            .eq("is_active", True) \
+            .single() \
+            .execute()
         return res.data or {}
     except Exception as e:
         print(f"get_phone_record failed: {e}")
@@ -41,8 +46,30 @@ def get_phone_record(device_id: str) -> dict:
 
 
 def get_active_categories() -> list:
-    res = supabase.table("categories").select("id, name").is_("parent_id", None).eq("is_active", True).order("sort_order").execute()
+    res = supabase.table("categories") \
+        .select("id, name") \
+        .is_("parent_id", None) \
+        .eq("is_active", True) \
+        .order("sort_order") \
+        .execute()
     return res.data
+
+
+def save_silent_record(meta: dict, phone: dict, s3_key: str):
+    """무음 감지 시 최소 정보만 기록 (추적/디버깅용)"""
+    try:
+        supabase.table("voc_records").insert({
+            "phone_id": phone.get("id"),
+            "phone_name": phone.get("name"),
+            "caller_number": meta.get("caller_number"),
+            "call_direction": meta.get("direction"),
+            "call_started_at": meta.get("call_started_at"),
+            "s3_key": s3_key,
+            "processing_status": "silent_skipped",
+        }).execute()
+        print("Saved to voc_records: silent_skipped")
+    except Exception as e:
+        print(f"save_silent_record 오류: {e}")
 
 
 def lambda_handler(event, context):
@@ -55,11 +82,11 @@ def lambda_handler(event, context):
     ai_provider_name = os.environ.get("AI_PROVIDER", "gemini")
     print(f"STT_PROVIDER={stt_provider_name}, AI_PROVIDER={ai_provider_name}")
 
-    # STT=skip인데 AI가 오디오 직접 처리 미지원이면 에러
+    # STT=skip 인데 AI가 오디오 직접 처리 미지원이면 에러
     if stt is None and not ai.supports_audio():
         raise ValueError(
             f"STT_PROVIDER=skip이지만 AI_PROVIDER({ai_provider_name})가 "
-            f"오디오 직접 처리를 지원하지 않습니다. STT_PROVIDER를 설정하세요."
+            f"오디오 직접 처리를 지원하지 않습니다."
         )
 
     for record in event.get("Records", []):
@@ -82,30 +109,43 @@ def lambda_handler(event, context):
             s3.download_fileobj(bucket, key, tmp)
             tmp_path = tmp.name
 
-        # STT
         transcript = None
+        analysis = None
+
+        # ── STT 단계 ──────────────────────────────────────
         if stt:
             transcript = stt.transcribe(tmp_path)
-            print("Transcript:", transcript[:200])
+            if transcript is None:
+                # 무음 감지 → AI/DB 단계 생략
+                print("STT 무음 감지 → AI/DB 단계 생략")
+                save_silent_record(meta, phone, key)
+                continue
+            print(f"Transcript ({len(transcript)}자): {transcript[:200]}")
         else:
             print("STT_PROVIDER=skip → AI 오디오 직접 처리 모드")
 
-        # AI 분석
+        # ── AI 분석 단계 ──────────────────────────────────
         categories = get_active_categories()
         transcript, analysis = ai.analyze(
             categories=categories,
             transcript=transcript,
             file_path=tmp_path if not transcript else None,
         )
+
+        # Gemini 오디오 직접 처리 시 무음 감지
+        if transcript is None or analysis is None:
+            print("AI 무음 감지 → DB 단계 생략")
+            save_silent_record(meta, phone, key)
+            continue
+
         print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
-        # category_id 매핑
+        # ── DB 저장 단계 ──────────────────────────────────
         category_id = next(
             (c["id"] for c in categories if c["name"] == analysis.get("category")),
             None
         )
 
-        # Supabase 저장
         supabase.table("voc_records").insert({
             "phone_id": phone.get("id"),
             "phone_name": phone.get("name"),
@@ -122,7 +162,6 @@ def lambda_handler(event, context):
             "action_memo": analysis.get("action_memo", ""),
             "processing_status": "completed",
         }).execute()
-        print("Saved to voc_records successfully.")
+        print("Saved to voc_records: completed")
 
     return {"statusCode": 200, "body": "bizcall-pipeline completed"}
-
