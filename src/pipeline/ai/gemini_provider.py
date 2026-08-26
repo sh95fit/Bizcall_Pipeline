@@ -88,9 +88,6 @@ class GeminiAIProvider(AIProvider):
 - transcript는 오디오에서 들리는 내용을 최대한 정확하게 변환하세요"""
 
     def _upload_audio_file(self, file_path: str):
-        """
-        Gemini File API로 오디오 업로드 후 ACTIVE 상태까지 대기
-        """
         print(f"Gemini File API 업로드 시작: {file_path}")
         uploaded = self.client.files.upload(
             file=file_path,
@@ -104,7 +101,7 @@ class GeminiAIProvider(AIProvider):
                 raise TimeoutError(
                     f"Gemini 파일 ACTIVE 대기 초과 ({FILE_READY_TIMEOUT_S}s): {uploaded.name}"
                 )
-            print(f"파일 처리 대기 중... ({elapsed}s / {uploaded.name})")
+            print(f"파일 처리 대기 중... ({elapsed}s)")
             time.sleep(FILE_READY_INTERVAL_S)
             elapsed += FILE_READY_INTERVAL_S
             uploaded = self.client.files.get(name=uploaded.name)
@@ -118,11 +115,7 @@ class GeminiAIProvider(AIProvider):
         transcript: str | None = None,
         file_path: str | None = None
     ) -> tuple[str | None, dict | None]:
-        """
-        Returns:
-            (transcript, analysis) : 정상 처리
-            (None, None)           : 무음 또는 유효 내용 없음 → DB 저장 생략
-        """
+
         if transcript:
             print("Gemini 텍스트 분석 모드")
             result = self.client.models.generate_content(
@@ -137,39 +130,23 @@ class GeminiAIProvider(AIProvider):
             try:
                 uploaded_file = self._upload_audio_file(file_path)
 
-                # AFC 경고 원인인 types.Part.from_uri() 대신
-                # SDK가 권장하는 types.Content 구조로 직접 구성
-                contents = types.Content(
-                    parts=[
-                        types.Part(
-                            file_data=types.FileData(
-                                mime_type="audio/mp4",
-                                file_uri=uploaded_file.uri,
-                            )
-                        ),
-                        types.Part(text=self._build_audio_prompt(categories)),
-                    ]
-                )
-
-                # AFC 비활성화 — generate_content에서 자동 함수 호출 완전 차단
-                config = types.GenerateContentConfig(
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    )
-                )
-
+                # 공식 문서 권장 방식:
+                # 업로드된 파일 객체를 contents 리스트에 직접 전달
+                # types.Part/FileData 래핑 없이 SDK가 자동 처리 → AFC 블로킹 없음
                 print("generate_content 호출 시작")
                 result = self.client.models.generate_content(
                     model=self.model,
-                    contents=contents,
-                    config=config,
+                    contents=[
+                        uploaded_file,
+                        self._build_audio_prompt(categories),
+                    ],
                 )
                 print("generate_content 응답 수신 완료")
 
                 raw_text = result.text.strip()
-                print(f"Gemini 응답 원문 (앞 200자): {raw_text[:200]}")
+                print(f"Gemini 응답 원문 (앞 300자): {raw_text[:300]}")
 
-                # 마크다운 코드블록 제거 후 파싱
+                # 마크다운 코드블록 제거
                 if raw_text.startswith("```"):
                     raw_text = raw_text.split("```")[1]
                     if raw_text.startswith("json"):
