@@ -55,8 +55,40 @@ def get_active_categories() -> list:
     return res.data
 
 
+def is_duplicate_insert_error(e: Exception) -> bool:
+    """
+    PostgreSQL 유니크 제약 위반(23505)만 정확히 판별.
+    문자열 매칭 대신 error code만 사용해 오탐 방지.
+    supabase-py는 PostgREST 에러를 Exception 문자열로 전달하므로
+    '23505' 포함 여부로 판별.
+    """
+    return "23505" in str(e)
+
+
+def save_completed_record(payload: dict) -> bool:
+    """
+    voc_records completed insert.
+    Returns:
+        True  : insert 성공
+        False : 유니크 제약 위반(23505) → 이미 처리된 파일, 정상 skip
+    Raises:
+        Exception : 그 외 DB 오류 → Lambda 실패 → SQS 재시도 → DLQ
+    """
+    try:
+        supabase.table("voc_records").insert(payload).execute()
+        return True
+    except Exception as e:
+        if is_duplicate_insert_error(e):
+            print(f"중복 insert 차단 (23505 유니크 제약): {payload.get('s3_key')}")
+            return False
+        raise
+
+
 def save_silent_record(meta: dict, phone: dict, s3_key: str):
-    """무음 감지 시 최소 정보만 기록 (추적/디버깅용)"""
+    """
+    무음 감지 시 최소 정보만 기록.
+    silent_skipped는 유니크 제약 대상 외 → 중복 insert 허용.
+    """
     try:
         supabase.table("voc_records").insert({
             "phone_id": phone.get("id"),
@@ -82,7 +114,6 @@ def lambda_handler(event, context):
     ai_provider_name = os.environ.get("AI_PROVIDER", "gemini")
     print(f"STT_PROVIDER={stt_provider_name}, AI_PROVIDER={ai_provider_name}")
 
-    # STT=skip 인데 AI가 오디오 직접 처리 미지원이면 에러
     if stt is None and not ai.supports_audio():
         raise ValueError(
             f"STT_PROVIDER=skip이지만 AI_PROVIDER({ai_provider_name})가 "
@@ -96,15 +127,12 @@ def lambda_handler(event, context):
         key = s3_event["s3"]["object"]["key"]
         print(f"Processing s3://{bucket}/{key}")
 
-        # 파일명 파싱
         meta = parse_s3_key(key)
         print("Parsed metadata:", meta)
 
-        # phone 레코드 조회
         phone = get_phone_record(meta.get("phone_id", ""))
         print("Phone record:", phone)
 
-        # S3 다운로드 후 처리 — finally로 tmp 파일 반드시 삭제
         tmp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
@@ -118,7 +146,6 @@ def lambda_handler(event, context):
             if stt:
                 transcript = stt.transcribe(tmp_path)
                 if transcript is None:
-                    # 무음 감지 → AI/DB 단계 생략
                     print("STT 무음 감지 → AI/DB 단계 생략")
                     save_silent_record(meta, phone, key)
                     continue
@@ -134,7 +161,6 @@ def lambda_handler(event, context):
                 file_path=tmp_path if not transcript else None,
             )
 
-            # Gemini 오디오 직접 처리 시 무음 감지
             if transcript is None or analysis is None:
                 print("AI 무음 감지 → DB 단계 생략")
                 save_silent_record(meta, phone, key)
@@ -148,7 +174,7 @@ def lambda_handler(event, context):
                 None
             )
 
-            supabase.table("voc_records").insert({
+            inserted = save_completed_record({
                 "phone_id": phone.get("id"),
                 "phone_name": phone.get("name"),
                 "caller_number": meta.get("caller_number"),
@@ -163,11 +189,13 @@ def lambda_handler(event, context):
                 "action_required": analysis.get("action_required", False),
                 "action_memo": analysis.get("action_memo", ""),
                 "processing_status": "completed",
-            }).execute()
-            print("Saved to voc_records: completed")
+            })
+
+            if inserted:
+                print("Saved to voc_records: completed")
+            # inserted=False 는 중복 정상 skip → SQS 메시지 삭제됨
 
         finally:
-            # STT·AI·DB 성공/실패/예외 어느 경로로 빠져나가든 tmp 파일 반드시 삭제
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
                 print(f"tmp 파일 삭제 완료: {tmp_path}")
