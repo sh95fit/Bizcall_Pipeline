@@ -1,6 +1,8 @@
 import json
 import os
+import time
 from google import genai
+from google.genai import types
 from .base import AIProvider
 
 
@@ -22,6 +24,10 @@ OUTPUT_CAUTION = """주의사항:
 - summary는 반드시 한국어로 작성하세요"""
 
 MIN_TRANSCRIPT_LENGTH = 10
+
+# Gemini File API 업로드 후 ACTIVE 상태 대기 설정
+FILE_READY_TIMEOUT_S = 60
+FILE_READY_INTERVAL_S = 2
 
 
 class GeminiAIProvider(AIProvider):
@@ -82,6 +88,33 @@ class GeminiAIProvider(AIProvider):
 {OUTPUT_CAUTION}
 - transcript는 오디오에서 들리는 내용을 최대한 정확하게 변환하세요"""
 
+    def _upload_audio_file(self, file_path: str):
+        """
+        Gemini File API로 오디오 파일 업로드 후 ACTIVE 상태가 될 때까지 대기
+        업로드된 파일 객체 반환 (호출부에서 반드시 삭제)
+        """
+        print(f"Gemini File API 업로드 시작: {file_path}")
+        uploaded = self.client.files.upload(
+            file=file_path,
+            config=types.UploadFileConfig(mime_type="audio/mp4")
+        )
+        print(f"업로드 완료: {uploaded.name} / 상태: {uploaded.state}")
+
+        # ACTIVE 상태까지 대기 (처리 중인 경우)
+        elapsed = 0
+        while uploaded.state.name != "ACTIVE":
+            if elapsed >= FILE_READY_TIMEOUT_S:
+                raise TimeoutError(
+                    f"Gemini 파일 ACTIVE 대기 초과 ({FILE_READY_TIMEOUT_S}s): {uploaded.name}"
+                )
+            print(f"파일 처리 대기 중... ({elapsed}s / {uploaded.name})")
+            time.sleep(FILE_READY_INTERVAL_S)
+            elapsed += FILE_READY_INTERVAL_S
+            uploaded = self.client.files.get(name=uploaded.name)
+
+        print(f"파일 ACTIVE 확인: {uploaded.name}")
+        return uploaded
+
     def analyze(
         self,
         categories: list,
@@ -102,27 +135,42 @@ class GeminiAIProvider(AIProvider):
             return transcript, json.loads(result.text.strip())
 
         elif file_path:
-            print("Gemini 오디오 직접 처리 모드")
-            with open(file_path, "rb") as f:
-                audio_data = f.read()
+            print("Gemini 오디오 File API 처리 모드")
+            uploaded_file = None
+            try:
+                # File API로 업로드 후 URI 참조 — inline_data 대비 타임아웃 없음
+                uploaded_file = self._upload_audio_file(file_path)
 
-            result = self.client.models.generate_content(
-                model=self.model,
-                contents=[
-                    {"inline_data": {"mime_type": "audio/mp4", "data": audio_data}},
-                    self._build_audio_prompt(categories),
-                ],
-            )
-            parsed = json.loads(result.text.strip())
-            extracted_transcript = parsed.pop("transcript", None)
+                result = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Part.from_uri(
+                            file_uri=uploaded_file.uri,
+                            mime_type="audio/mp4"
+                        ),
+                        self._build_audio_prompt(categories),
+                    ],
+                )
 
-            # 무음 판정: transcript 없거나 너무 짧으면 (None, None) 반환
-            if not extracted_transcript or \
-               len(extracted_transcript.replace(" ", "")) < MIN_TRANSCRIPT_LENGTH:
-                print("Gemini 오디오 모드 — 유효 transcript 없음 → 무음 처리")
-                return None, None
+                parsed = json.loads(result.text.strip())
+                extracted_transcript = parsed.pop("transcript", None)
 
-            return extracted_transcript, parsed
+                # 무음 판정: transcript 없거나 너무 짧으면 (None, None) 반환
+                if not extracted_transcript or \
+                   len(extracted_transcript.replace(" ", "")) < MIN_TRANSCRIPT_LENGTH:
+                    print("Gemini 오디오 모드 — 유효 transcript 없음 → 무음 처리")
+                    return None, None
+
+                return extracted_transcript, parsed
+
+            finally:
+                # 성공·실패·예외 어느 경로든 Gemini에 업로드된 파일 반드시 삭제
+                if uploaded_file is not None:
+                    try:
+                        self.client.files.delete(name=uploaded_file.name)
+                        print(f"Gemini 업로드 파일 삭제 완료: {uploaded_file.name}")
+                    except Exception as e:
+                        print(f"Gemini 업로드 파일 삭제 실패 (무시): {e}")
 
         else:
             raise ValueError("transcript 또는 file_path 중 하나는 필수입니다.")
