@@ -27,7 +27,7 @@ MIN_TRANSCRIPT_LENGTH = 10
 class GeminiAIProvider(AIProvider):
     def __init__(self):
         self.client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        self.model = "gemini-3.6-flash"
+        self.model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
     def supports_audio(self) -> bool:
         return True
