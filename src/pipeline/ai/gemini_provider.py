@@ -25,7 +25,6 @@ OUTPUT_CAUTION = """주의사항:
 
 MIN_TRANSCRIPT_LENGTH = 10
 
-# Gemini File API 업로드 후 ACTIVE 상태 대기 설정
 FILE_READY_TIMEOUT_S = 60
 FILE_READY_INTERVAL_S = 2
 
@@ -90,8 +89,7 @@ class GeminiAIProvider(AIProvider):
 
     def _upload_audio_file(self, file_path: str):
         """
-        Gemini File API로 오디오 파일 업로드 후 ACTIVE 상태가 될 때까지 대기
-        업로드된 파일 객체 반환 (호출부에서 반드시 삭제)
+        Gemini File API로 오디오 업로드 후 ACTIVE 상태까지 대기
         """
         print(f"Gemini File API 업로드 시작: {file_path}")
         uploaded = self.client.files.upload(
@@ -100,7 +98,6 @@ class GeminiAIProvider(AIProvider):
         )
         print(f"업로드 완료: {uploaded.name} / 상태: {uploaded.state}")
 
-        # ACTIVE 상태까지 대기 (처리 중인 경우)
         elapsed = 0
         while uploaded.state.name != "ACTIVE":
             if elapsed >= FILE_READY_TIMEOUT_S:
@@ -138,24 +135,50 @@ class GeminiAIProvider(AIProvider):
             print("Gemini 오디오 File API 처리 모드")
             uploaded_file = None
             try:
-                # File API로 업로드 후 URI 참조 — inline_data 대비 타임아웃 없음
                 uploaded_file = self._upload_audio_file(file_path)
 
-                result = self.client.models.generate_content(
-                    model=self.model,
-                    contents=[
-                        types.Part.from_uri(
-                            file_uri=uploaded_file.uri,
-                            mime_type="audio/mp4"
+                # AFC 경고 원인인 types.Part.from_uri() 대신
+                # SDK가 권장하는 types.Content 구조로 직접 구성
+                contents = types.Content(
+                    parts=[
+                        types.Part(
+                            file_data=types.FileData(
+                                mime_type="audio/mp4",
+                                file_uri=uploaded_file.uri,
+                            )
                         ),
-                        self._build_audio_prompt(categories),
-                    ],
+                        types.Part(text=self._build_audio_prompt(categories)),
+                    ]
                 )
 
-                parsed = json.loads(result.text.strip())
+                # AFC 비활성화 — generate_content에서 자동 함수 호출 완전 차단
+                config = types.GenerateContentConfig(
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    )
+                )
+
+                print("generate_content 호출 시작")
+                result = self.client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
+                )
+                print("generate_content 응답 수신 완료")
+
+                raw_text = result.text.strip()
+                print(f"Gemini 응답 원문 (앞 200자): {raw_text[:200]}")
+
+                # 마크다운 코드블록 제거 후 파싱
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```")[1]
+                    if raw_text.startswith("json"):
+                        raw_text = raw_text[4:]
+                    raw_text = raw_text.strip()
+
+                parsed = json.loads(raw_text)
                 extracted_transcript = parsed.pop("transcript", None)
 
-                # 무음 판정: transcript 없거나 너무 짧으면 (None, None) 반환
                 if not extracted_transcript or \
                    len(extracted_transcript.replace(" ", "")) < MIN_TRANSCRIPT_LENGTH:
                     print("Gemini 오디오 모드 — 유효 transcript 없음 → 무음 처리")
@@ -164,7 +187,6 @@ class GeminiAIProvider(AIProvider):
                 return extracted_transcript, parsed
 
             finally:
-                # 성공·실패·예외 어느 경로든 Gemini에 업로드된 파일 반드시 삭제
                 if uploaded_file is not None:
                     try:
                         self.client.files.delete(name=uploaded_file.name)
