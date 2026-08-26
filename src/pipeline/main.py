@@ -104,64 +104,72 @@ def lambda_handler(event, context):
         phone = get_phone_record(meta.get("phone_id", ""))
         print("Phone record:", phone)
 
-        # S3 다운로드
-        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
-            s3.download_fileobj(bucket, key, tmp)
-            tmp_path = tmp.name
+        # S3 다운로드 후 처리 — finally로 tmp 파일 반드시 삭제
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+                s3.download_fileobj(bucket, key, tmp)
+                tmp_path = tmp.name
 
-        transcript = None
-        analysis = None
+            transcript = None
+            analysis = None
 
-        # ── STT 단계 ──────────────────────────────────────
-        if stt:
-            transcript = stt.transcribe(tmp_path)
-            if transcript is None:
-                # 무음 감지 → AI/DB 단계 생략
-                print("STT 무음 감지 → AI/DB 단계 생략")
+            # ── STT 단계 ──────────────────────────────────────
+            if stt:
+                transcript = stt.transcribe(tmp_path)
+                if transcript is None:
+                    # 무음 감지 → AI/DB 단계 생략
+                    print("STT 무음 감지 → AI/DB 단계 생략")
+                    save_silent_record(meta, phone, key)
+                    continue
+                print(f"Transcript ({len(transcript)}자): {transcript[:200]}")
+            else:
+                print("STT_PROVIDER=skip → AI 오디오 직접 처리 모드")
+
+            # ── AI 분석 단계 ──────────────────────────────────
+            categories = get_active_categories()
+            transcript, analysis = ai.analyze(
+                categories=categories,
+                transcript=transcript,
+                file_path=tmp_path if not transcript else None,
+            )
+
+            # Gemini 오디오 직접 처리 시 무음 감지
+            if transcript is None or analysis is None:
+                print("AI 무음 감지 → DB 단계 생략")
                 save_silent_record(meta, phone, key)
                 continue
-            print(f"Transcript ({len(transcript)}자): {transcript[:200]}")
-        else:
-            print("STT_PROVIDER=skip → AI 오디오 직접 처리 모드")
 
-        # ── AI 분석 단계 ──────────────────────────────────
-        categories = get_active_categories()
-        transcript, analysis = ai.analyze(
-            categories=categories,
-            transcript=transcript,
-            file_path=tmp_path if not transcript else None,
-        )
+            print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
-        # Gemini 오디오 직접 처리 시 무음 감지
-        if transcript is None or analysis is None:
-            print("AI 무음 감지 → DB 단계 생략")
-            save_silent_record(meta, phone, key)
-            continue
+            # ── DB 저장 단계 ──────────────────────────────────
+            category_id = next(
+                (c["id"] for c in categories if c["name"] == analysis.get("category")),
+                None
+            )
 
-        print("Analysis:", json.dumps(analysis, ensure_ascii=False))
+            supabase.table("voc_records").insert({
+                "phone_id": phone.get("id"),
+                "phone_name": phone.get("name"),
+                "caller_number": meta.get("caller_number"),
+                "call_direction": meta.get("direction"),
+                "call_started_at": meta.get("call_started_at"),
+                "s3_key": key,
+                "transcript": transcript,
+                "summary": analysis.get("summary"),
+                "category_id": category_id,
+                "sentiment": analysis.get("sentiment"),
+                "keywords": analysis.get("keywords", []),
+                "action_required": analysis.get("action_required", False),
+                "action_memo": analysis.get("action_memo", ""),
+                "processing_status": "completed",
+            }).execute()
+            print("Saved to voc_records: completed")
 
-        # ── DB 저장 단계 ──────────────────────────────────
-        category_id = next(
-            (c["id"] for c in categories if c["name"] == analysis.get("category")),
-            None
-        )
-
-        supabase.table("voc_records").insert({
-            "phone_id": phone.get("id"),
-            "phone_name": phone.get("name"),
-            "caller_number": meta.get("caller_number"),
-            "call_direction": meta.get("direction"),
-            "call_started_at": meta.get("call_started_at"),
-            "s3_key": key,
-            "transcript": transcript,
-            "summary": analysis.get("summary"),
-            "category_id": category_id,
-            "sentiment": analysis.get("sentiment"),
-            "keywords": analysis.get("keywords", []),
-            "action_required": analysis.get("action_required", False),
-            "action_memo": analysis.get("action_memo", ""),
-            "processing_status": "completed",
-        }).execute()
-        print("Saved to voc_records: completed")
+        finally:
+            # STT·AI·DB 성공/실패/예외 어느 경로로 빠져나가든 tmp 파일 반드시 삭제
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                print(f"tmp 파일 삭제 완료: {tmp_path}")
 
     return {"statusCode": 200, "body": "bizcall-pipeline completed"}
