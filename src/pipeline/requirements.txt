@@ -1,4 +1,4 @@
 groq
-google-genai
+google-genai==1.7.0
 supabase
 boto3
