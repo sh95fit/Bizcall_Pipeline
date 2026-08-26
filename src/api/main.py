@@ -3,16 +3,13 @@ import os
 import boto3
 from supabase import create_client, Client
 
-# 환경변수
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
 S3_BUCKET = os.environ["S3_BUCKET"]
 S3_UPLOAD_ROLE_ARN = os.environ["S3_UPLOAD_ROLE_ARN"]
 AWS_REGION = "ap-northeast-2"
-
 CREDENTIALS_DURATION_SEC = 3600
 
-# Supabase 클라이언트 초기화 (Lambda 컨테이너 재사용 시 재생성 방지)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 
@@ -27,8 +24,9 @@ def response(status_code, body):
 def handle_register(body):
     """
     POST /phones/register
-    body: { "token": "...", "device_id": "..." }
-    → phones 테이블에서 token 조회 → phone_id, name, is_active 반환
+    - 토큰은 최초 1회만 유효 (is_used=false 인 경우만 등록 허용)
+    - 등록 완료 시 is_used=true, device_id 저장, registered_at 기록
+    - 동일 device_id 재등록(앱 재설치)은 허용
     """
     token = body.get("token", "").strip()
     device_id = body.get("device_id", "").strip()
@@ -37,92 +35,100 @@ def handle_register(body):
         return response(400, {"error": "token과 device_id는 필수입니다"})
 
     try:
-        # token으로 phones 테이블 조회
         result = supabase.table("phones") \
-            .select("id, name, is_active") \
+            .select("id, name, is_active, is_used, device_id") \
             .eq("token", token) \
             .single() \
             .execute()
+    except Exception as e:
+        print(f"handle_register DB 조회 오류: {e}")
+        return response(401, {"error": "유효하지 않은 토큰입니다"})
 
-        if not result.data:
-            return response(401, {"error": "유효하지 않은 토큰입니다"})
+    if not result.data:
+        return response(401, {"error": "유효하지 않은 토큰입니다"})
 
-        phone = result.data
-        phone_id = phone["id"]
-        name = phone["name"]
-        is_active = phone["is_active"]
+    phone = result.data
 
-        if not is_active:
-            return response(403, {"error": "비활성화된 업무폰입니다"})
+    if not phone["is_active"]:
+        return response(403, {"error": "비활성화된 업무폰입니다"})
 
-        # last_seen_at 및 device_id 업데이트
-        supabase.table("phones") \
-            .update({"last_seen_at": "now()", "device_id": device_id}) \
-            .eq("id", phone_id) \
-            .execute()
+    existing_device_id = phone.get("device_id") or ""
+    is_used = phone.get("is_used", False)
 
-        return response(200, {
-            "phone_id": phone_id,
-            "name": name,
-            "is_active": is_active
+    # 이미 사용된 토큰 + 다른 기기 → 차단
+    if is_used and existing_device_id and existing_device_id != device_id:
+        return response(409, {
+            "error": "이미 다른 기기에 등록된 토큰입니다",
+            "code": "TOKEN_ALREADY_BOUND"
         })
 
+    # 최초 등록 시에만 토큰 소진 처리
+    update_data = {"last_seen_at": "now()"}
+    if not is_used:
+        update_data["device_id"] = device_id
+        update_data["is_used"] = True
+        update_data["registered_at"] = "now()"
+
+    try:
+        supabase.table("phones") \
+            .update(update_data) \
+            .eq("id", phone["id"]) \
+            .execute()
     except Exception as e:
-        print(f"handle_register error: {e}")
-        return response(500, {"error": "서버 오류가 발생했습니다"})
+        print(f"handle_register DB 업데이트 오류: {e}")
+        return response(500, {"error": "서버 오류"})
+
+    return response(200, {
+        "phone_id": phone["id"],
+        "name": phone["name"],
+        "is_active": phone["is_active"]
+    })
 
 
 def handle_credentials(body):
     """
     POST /phones/credentials
-    body: { "phone_id": "...", "token": "..." }
-    → token + phone_id 검증 → STS 임시 자격증명 발급
+    - 등록 완료 후 토큰 없이 phone_id + device_id 로만 인증
+    - STS 임시 자격증명 발급 (1시간 유효)
     """
     phone_id = body.get("phone_id", "").strip()
-    token = body.get("token", "").strip()
+    device_id = body.get("device_id", "").strip()
 
-    if not phone_id or not token:
-        return response(400, {"error": "phone_id와 token은 필수입니다"})
+    if not phone_id or not device_id:
+        return response(400, {"error": "phone_id와 device_id는 필수입니다"})
 
     try:
-        # phone_id + token 동시 검증
         result = supabase.table("phones") \
-            .select("is_active") \
+            .select("id, is_active, device_id") \
             .eq("id", phone_id) \
-            .eq("token", token) \
+            .eq("device_id", device_id) \
+            .eq("is_active", True) \
             .single() \
             .execute()
-
-        if not result.data:
-            return response(401, {"error": "인증 정보가 올바르지 않습니다"})
-
-        is_active = result.data["is_active"]
-        if not is_active:
-            return response(403, {"error": "비활성화된 업무폰입니다"})
-
     except Exception as e:
-        print(f"handle_credentials db error: {e}")
-        return response(500, {"error": "서버 오류가 발생했습니다"})
+        print(f"handle_credentials DB 조회 오류: {e}")
+        return response(401, {"error": "인증 정보가 올바르지 않습니다"})
+
+    if not result.data:
+        return response(401, {"error": "인증 정보가 올바르지 않습니다"})
+
+    # last_seen_at 갱신
+    try:
+        supabase.table("phones") \
+            .update({"last_seen_at": "now()"}) \
+            .eq("id", phone_id) \
+            .execute()
+    except Exception as e:
+        print(f"last_seen_at 업데이트 오류: {e}")
 
     # STS 임시 자격증명 발급
     try:
         sts = boto3.client("sts", region_name=AWS_REGION)
-
-        session_policy = json.dumps({
-            "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Action": "s3:PutObject",
-                "Resource": f"arn:aws:s3:::{S3_BUCKET}/recordings/*"
-            }]
-        })
-
         creds = sts.assume_role(
             RoleArn=S3_UPLOAD_ROLE_ARN,
             RoleSessionName=f"bizcall-{phone_id[:8]}",
-            DurationSeconds=CREDENTIALS_DURATION_SEC,
             ExternalId="bizcall-upload-session",
-            Policy=session_policy
+            DurationSeconds=CREDENTIALS_DURATION_SEC,
         )["Credentials"]
 
         return response(200, {
@@ -131,11 +137,10 @@ def handle_credentials(body):
             "session_token": creds["SessionToken"],
             "expiration": creds["Expiration"].isoformat(),
             "bucket": S3_BUCKET,
-            "region": AWS_REGION
+            "region": AWS_REGION,
         })
-
     except Exception as e:
-        print(f"handle_credentials sts error: {e}")
+        print(f"STS assume_role 오류: {e}")
         return response(500, {"error": "자격증명 발급 실패"})
 
 
@@ -145,9 +150,9 @@ def lambda_handler(event, context):
     http_method = event.get("httpMethod", "")
     path = event.get("path", "")
 
-    raw_body = event.get("body", "{}")
+    raw_body = event.get("body", "{}") or "{}"
     try:
-        body = json.loads(raw_body) if raw_body else {}
+        body = json.loads(raw_body)
     except Exception:
         body = {}
 
@@ -158,4 +163,3 @@ def lambda_handler(event, context):
         return handle_credentials(body)
 
     return response(404, {"error": "존재하지 않는 엔드포인트입니다"})
- 
