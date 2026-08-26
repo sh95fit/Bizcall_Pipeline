@@ -5,7 +5,8 @@ from .base import STTProvider
 
 # Whisper가 무음에서 자주 생성하는 할루시네이션 패턴 목록
 HALLUCINATION_PATTERNS = [
-    r"^감사합니다\.?$",
+    r"^[\s감사합니다\.\!]*$",                          # "감사합니다" 반복 조합
+    r"^(감사합니다[\.\s]*)+$",                         # "감사합니다. 감사합니다." 반복
     r"^시청해\s*주셔서\s*감사합니다\.?$",
     r"^구독과\s*좋아요\s*부탁드립니다\.?$",
     r"^like\s*and\s*subscribe\.?$",
