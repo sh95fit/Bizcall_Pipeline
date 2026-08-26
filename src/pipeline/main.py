@@ -31,11 +31,11 @@ def parse_s3_key(key: str) -> dict:
         return {}
 
 
-def get_phone_record(device_id: str) -> dict:
+def get_phone_record(phone_id: str) -> dict:
     try:
         res = supabase.table("phones") \
             .select("id, name") \
-            .eq("device_id", device_id) \
+            .eq("id", phone_id) \
             .eq("is_active", True) \
             .single() \
             .execute()
