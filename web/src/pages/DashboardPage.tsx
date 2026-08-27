@@ -8,10 +8,11 @@ import {
 import { supabase } from '../lib/supabase'
 
 /* ───────── 타입 ───────── */
+// many-to-one FK join → 배열이 아닌 단일 객체 or null
 interface VocRow {
   call_started_at: string | null
   category_id: string | null
-  categories: { name: string }[] | null
+  categories: { name: string } | null
 }
 
 interface ChartDatum {
@@ -20,7 +21,6 @@ interface ChartDatum {
   [category: string]: string | number
 }
 
-// recharts Bar onClick의 data 파라미터: BarRectangleItem에 커스텀 필드가 런타임에 존재
 type BarClickData = BarRectangleItem & ChartDatum
 
 /* ───────── 상수 ───────── */
@@ -36,6 +36,15 @@ const getDefaultRange = () => {
     from: from.toISOString().slice(0, 10),
     to: now.toISOString().slice(0, 10),
   }
+}
+
+// 날짜 문자열(YYYY-MM-DD)을 KST 기준으로 UTC ISO 변환
+const toUtcIso = (dateStr: string, endOfDay = false) => {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const kstOffset = 9 * 60 // KST = UTC+9
+  const date = new Date(Date.UTC(y, m - 1, d, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0))
+  date.setUTCMinutes(date.getUTCMinutes() - kstOffset)
+  return date.toISOString()
 }
 
 /* ───────── 컴포넌트 ───────── */
@@ -57,14 +66,14 @@ export default function DashboardPage() {
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
 
-    const fromISO = new Date(dateFrom).toISOString()
-    const toISO   = new Date(dateTo + 'T23:59:59').toISOString()
+    const fromISO = toUtcIso(dateFrom, false)
+    const toISO   = toUtcIso(dateTo, true)
 
     const [
       { count: tv },
       { count: tov },
       { count: ap },
-      { data: rows },
+      { data: rows, error },
     ] = await Promise.all([
       supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
@@ -81,12 +90,15 @@ export default function DashboardPage() {
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true),
 
+      // many-to-one join → categories는 단일 객체로 반환됨
       supabase.from('voc_records')
         .select('call_started_at, category_id, categories(name)')
         .eq('is_deleted', false)
         .gte('call_started_at', fromISO)
         .lte('call_started_at', toISO),
     ])
+
+    if (error) console.error('차트 데이터 fetch 오류:', error)
 
     setTotalVoc(tv ?? 0)
     setTodayVoc(tov ?? 0)
@@ -104,10 +116,16 @@ export default function DashboardPage() {
 
     vocRows.forEach(row => {
       if (!row.call_started_at) return
-      const d = new Date(row.call_started_at)
-      const iso   = d.toISOString().slice(0, 10)
-      const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
-      const catName = row.categories?.[0]?.name ?? '미분류'
+
+      // KST 기준 날짜 계산 (UTC+9)
+      const utcMs = new Date(row.call_started_at).getTime()
+      const kstMs = utcMs + 9 * 60 * 60 * 1000
+      const kstDate = new Date(kstMs)
+      const iso   = kstDate.toISOString().slice(0, 10)
+      const label = `${String(kstDate.getUTCMonth() + 1).padStart(2, '0')}/${String(kstDate.getUTCDate()).padStart(2, '0')}`
+
+      // many-to-one: categories는 단일 객체 (배열 아님)
+      const catName = row.categories?.name ?? '미분류'
       catSet.add(catName)
 
       if (!dateMap[iso]) dateMap[iso] = { __label: label }
@@ -126,9 +144,6 @@ export default function DashboardPage() {
     return { chartData: data, categoryKeys: keys }
   }, [vocRows])
 
-  /* ── Bar 클릭 핸들러 ──
-     런타임에는 ChartDatum 필드가 실제로 존재하므로 정상 동작
-     타입은 BarRectangleItem & ChartDatum 로 선언해 에러 해소 */
   const handleBarClick = (data: BarClickData) => {
     if (data?.dateISO) navigate(`/voc?date=${data.dateISO}`)
   }
