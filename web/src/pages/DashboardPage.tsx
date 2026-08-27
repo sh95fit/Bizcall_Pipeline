@@ -7,8 +7,6 @@ import {
 } from 'recharts'
 import { supabase } from '../lib/supabase'
 
-/* ───────── 타입 ───────── */
-// many-to-one FK join → 배열이 아닌 단일 객체 or null
 interface VocRow {
   call_started_at: string | null
   category_id: string | null
@@ -23,37 +21,26 @@ interface ChartDatum {
 
 type BarClickData = BarRectangleItem & ChartDatum
 
-/* ───────── 상수 ───────── */
 const COLORS = [
   '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
   '#fb7185', '#facc15', '#34d399', '#38bdf8',
 ]
 
 const getDefaultRange = () => {
-  const now = new Date()
+  const now  = new Date()
   const from = new Date(now.getFullYear(), now.getMonth(), 1)
   return {
     from: from.toISOString().slice(0, 10),
-    to: now.toISOString().slice(0, 10),
+    to:   now.toISOString().slice(0, 10),
   }
 }
 
-// 날짜 문자열(YYYY-MM-DD)을 KST 기준으로 UTC ISO 변환
-const toUtcIso = (dateStr: string, endOfDay = false) => {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const kstOffset = 9 * 60 // KST = UTC+9
-  const date = new Date(Date.UTC(y, m - 1, d, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0))
-  date.setUTCMinutes(date.getUTCMinutes() - kstOffset)
-  return date.toISOString()
-}
-
-/* ───────── 컴포넌트 ───────── */
 export default function DashboardPage() {
   const navigate = useNavigate()
   const def = getDefaultRange()
 
-  const [dateFrom, setDateFrom] = useState(def.from)
-  const [dateTo, setDateTo]     = useState(def.to)
+  const [dateFrom, setDateFrom]         = useState(def.from)
+  const [dateTo, setDateTo]             = useState(def.to)
   const [totalVoc, setTotalVoc]         = useState(0)
   const [todayVoc, setTodayVoc]         = useState(0)
   const [activePhones, setActivePhones] = useState(0)
@@ -63,17 +50,16 @@ export default function DashboardPage() {
   const fetchData = async () => {
     setLoading(true)
 
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
-
-    const fromISO = toUtcIso(dateFrom, false)
-    const toISO   = toUtcIso(dateTo, true)
+    // call_started_at이 KST로 저장돼 있으므로 +09:00 명시
+    const fromISO    = `${dateFrom}T00:00:00+09:00`
+    const toISO      = `${dateTo}T23:59:59+09:00`
+    const todayISO   = `${new Date().toISOString().slice(0, 10)}T00:00:00+09:00`
 
     const [
       { count: tv },
       { count: tov },
       { count: ap },
-      { data: rows, error },
+      { data: rows, error: chartError },
     ] = await Promise.all([
       supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
@@ -84,21 +70,20 @@ export default function DashboardPage() {
       supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
         .eq('is_deleted', false)
-        .gte('call_started_at', todayStart.toISOString()),
+        .gte('call_started_at', todayISO),
 
       supabase.from('phones')
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true),
 
-      // many-to-one join → categories는 단일 객체로 반환됨
       supabase.from('voc_records')
-        .select('call_started_at, category_id, categories(name)')
+        .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
         .eq('is_deleted', false)
         .gte('call_started_at', fromISO)
         .lte('call_started_at', toISO),
     ])
 
-    if (error) console.error('차트 데이터 fetch 오류:', error)
+    if (chartError) console.error('차트 fetch 오류:', chartError)
 
     setTotalVoc(tv ?? 0)
     setTodayVoc(tov ?? 0)
@@ -109,22 +94,18 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchData() }, [dateFrom, dateTo])
 
-  /* ── 차트 데이터 가공 ── */
   const { chartData, categoryKeys } = useMemo(() => {
     const dateMap: Record<string, Record<string, number | string>> = {}
-    const catSet = new Set<string>()
+    const catSet  = new Set<string>()
 
     vocRows.forEach(row => {
       if (!row.call_started_at) return
 
-      // KST 기준 날짜 계산 (UTC+9)
-      const utcMs = new Date(row.call_started_at).getTime()
-      const kstMs = utcMs + 9 * 60 * 60 * 1000
-      const kstDate = new Date(kstMs)
-      const iso   = kstDate.toISOString().slice(0, 10)
-      const label = `${String(kstDate.getUTCMonth() + 1).padStart(2, '0')}/${String(kstDate.getUTCDate()).padStart(2, '0')}`
+      // call_started_at이 KST이므로 로컬 Date 파싱으로 날짜 추출
+      const d     = new Date(row.call_started_at)
+      const iso   = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 
-      // many-to-one: categories는 단일 객체 (배열 아님)
       const catName = row.categories?.name ?? '미분류'
       catSet.add(catName)
 
@@ -136,7 +117,7 @@ export default function DashboardPage() {
     const keys   = Array.from(catSet)
 
     const data: ChartDatum[] = sorted.map(([iso, vals]) => ({
-      date: vals.__label as string,
+      date:    vals.__label as string,
       dateISO: iso,
       ...Object.fromEntries(keys.map(k => [k, (vals[k] as number) ?? 0])),
     }))
@@ -156,7 +137,6 @@ export default function DashboardPage() {
 
   return (
     <div>
-      {/* 헤더 + 기간 필터 */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
         <div className="flex items-center gap-2 text-sm">
@@ -178,7 +158,6 @@ export default function DashboardPage() {
         <p className="text-gray-400 text-sm">불러오는 중...</p>
       ) : (
         <>
-          {/* 통계 카드 */}
           <div className="grid grid-cols-3 gap-4 mb-6">
             {cards.map(({ label, value, unit, color }) => (
               <div key={label} className="bg-white rounded-xl border border-gray-200 p-5">
@@ -191,7 +170,6 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          {/* 차트 */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <p className="text-sm font-semibold text-gray-700 mb-4">
               일자별 · 카테고리별 VOC 현황
