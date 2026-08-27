@@ -30,8 +30,8 @@ const getDefaultRange = () => {
   const now  = new Date()
   const from = new Date(now.getFullYear(), now.getMonth(), 1)
   return {
-    from: from.toISOString().slice(0, 10),
-    to:   now.toISOString().slice(0, 10),
+    from: `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-01`,
+    to:   `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
   }
 }
 
@@ -50,10 +50,11 @@ export default function DashboardPage() {
   const fetchData = async () => {
     setLoading(true)
 
-    // call_started_at이 KST로 저장돼 있으므로 +09:00 명시
-    const fromISO    = `${dateFrom}T00:00:00+09:00`
-    const toISO      = `${dateTo}T23:59:59+09:00`
-    const todayISO   = `${new Date().toISOString().slice(0, 10)}T00:00:00+09:00`
+    // call_started_at이 실제 KST 시각 (timezone 무시하고 문자열 직접 비교)
+    const fromISO  = `${dateFrom} 00:00:00`
+    const toISO    = `${dateTo} 23:59:59`
+    const today    = new Date()
+    const todayISO = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`
 
     const [
       { count: tv },
@@ -101,10 +102,9 @@ export default function DashboardPage() {
     vocRows.forEach(row => {
       if (!row.call_started_at) return
 
-      // call_started_at이 KST이므로 로컬 Date 파싱으로 날짜 추출
-      const d     = new Date(row.call_started_at)
-      const iso   = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+      // timezone 파싱 없이 문자열 앞 10자리(YYYY-MM-DD)만 직접 사용
+      const iso   = row.call_started_at.slice(0, 10)
+      const label = `${iso.slice(5, 7)}/${iso.slice(8, 10)}`
 
       const catName = row.categories?.name ?? '미분류'
       catSet.add(catName)
