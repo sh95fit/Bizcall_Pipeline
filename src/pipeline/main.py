@@ -1,7 +1,7 @@
 import json
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 import boto3
 from supabase import create_client
 from stt import get_stt_provider
@@ -31,6 +31,33 @@ def parse_s3_key(key: str) -> dict:
         return {}
 
 
+# S3 Object Metadata에서 통화 종료 시각 / 통화 시간 읽기
+def get_call_timing_from_s3(bucket: str, key: str) -> dict:
+    """
+    앱이 S3 업로드 시 ObjectMetadata에 저장한 커스텀 헤더를 읽어 반환.
+
+    반환 키:
+        call_ended_at : ISO 문자열 또는 None
+        duration_sec  : int 또는 None
+
+    실패 시 빈 값 반환 → DB에 null로 저장 (파이프라인 중단 없음)
+    """
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+        meta = head.get("Metadata", {})
+
+        call_ended_at = meta.get("call-end-time")     # "yyyy-MM-dd'T'HH:mm:ss"
+        duration_str = meta.get("call-duration-sec")  # "정수 문자열"
+
+        return {
+            "call_ended_at": call_ended_at,
+            "duration_sec": int(duration_str) if duration_str and duration_str.isdigit() else None,
+        }
+    except Exception as e:
+        print(f"get_call_timing_from_s3 실패 (null 폴백): {e}")
+        return {"call_ended_at": None, "duration_sec": None}
+
+
 def get_phone_record(phone_id: str) -> dict:
     try:
         res = supabase.table("phones") \
@@ -56,24 +83,10 @@ def get_active_categories() -> list:
 
 
 def is_duplicate_insert_error(e: Exception) -> bool:
-    """
-    PostgreSQL 유니크 제약 위반(23505)만 정확히 판별.
-    문자열 매칭 대신 error code만 사용해 오탐 방지.
-    supabase-py는 PostgREST 에러를 Exception 문자열로 전달하므로
-    '23505' 포함 여부로 판별.
-    """
     return "23505" in str(e)
 
 
 def save_completed_record(payload: dict) -> bool:
-    """
-    voc_records completed insert.
-    Returns:
-        True  : insert 성공
-        False : 유니크 제약 위반(23505) → 이미 처리된 파일, 정상 skip
-    Raises:
-        Exception : 그 외 DB 오류 → Lambda 실패 → SQS 재시도 → DLQ
-    """
     try:
         supabase.table("voc_records").insert(payload).execute()
         return True
@@ -84,10 +97,10 @@ def save_completed_record(payload: dict) -> bool:
         raise
 
 
-def save_silent_record(meta: dict, phone: dict, s3_key: str):
+def save_silent_record(meta: dict, phone: dict, s3_key: str, timing: dict):
     """
     무음 감지 시 최소 정보만 기록.
-    silent_skipped는 유니크 제약 대상 외 → 중복 insert 허용.
+    timing을 받아 call_ended_at / duration_sec도 함께 저장.
     """
     try:
         supabase.table("voc_records").insert({
@@ -96,6 +109,8 @@ def save_silent_record(meta: dict, phone: dict, s3_key: str):
             "caller_number": meta.get("caller_number"),
             "call_direction": meta.get("direction"),
             "call_started_at": meta.get("call_started_at"),
+            "call_ended_at": timing.get("call_ended_at"),   
+            "duration_sec": timing.get("duration_sec"),     
             "s3_key": s3_key,
             "processing_status": "silent_skipped",
         }).execute()
@@ -130,6 +145,11 @@ def lambda_handler(event, context):
         meta = parse_s3_key(key)
         print("Parsed metadata:", meta)
 
+        # ★ S3 Object Metadata에서 통화 종료 시각 / 통화 시간 읽기
+        timing = get_call_timing_from_s3(bucket, key)
+        print(f"Call timing: end={timing.get('call_ended_at')}, "
+              f"duration={timing.get('duration_sec')}s")
+
         phone = get_phone_record(meta.get("phone_id", ""))
         print("Phone record:", phone)
 
@@ -147,7 +167,7 @@ def lambda_handler(event, context):
                 transcript = stt.transcribe(tmp_path)
                 if transcript is None:
                     print("STT 무음 감지 → AI/DB 단계 생략")
-                    save_silent_record(meta, phone, key)
+                    save_silent_record(meta, phone, key, timing)  # ★ timing 전달
                     continue
                 print(f"Transcript ({len(transcript)}자): {transcript[:200]}")
             else:
@@ -163,7 +183,7 @@ def lambda_handler(event, context):
 
             if transcript is None or analysis is None:
                 print("AI 무음 감지 → DB 단계 생략")
-                save_silent_record(meta, phone, key)
+                save_silent_record(meta, phone, key, timing)  # ★ timing 전달
                 continue
 
             print("Analysis:", json.dumps(analysis, ensure_ascii=False))
@@ -180,6 +200,8 @@ def lambda_handler(event, context):
                 "caller_number": meta.get("caller_number"),
                 "call_direction": meta.get("direction"),
                 "call_started_at": meta.get("call_started_at"),
+                "call_ended_at": timing.get("call_ended_at"),  
+                "duration_sec": timing.get("duration_sec"),    
                 "s3_key": key,
                 "transcript": transcript,
                 "summary": analysis.get("summary"),
@@ -193,7 +215,6 @@ def lambda_handler(event, context):
 
             if inserted:
                 print("Saved to voc_records: completed")
-            # inserted=False 는 중복 정상 skip → SQS 메시지 삭제됨
 
         finally:
             if tmp_path and os.path.exists(tmp_path):
