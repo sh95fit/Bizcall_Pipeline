@@ -9,7 +9,7 @@ import VocDetailPage from './pages/VocDetailPage'
 import PhonesPage from './pages/PhonesPage'
 import CategoriesPage from './pages/CategoriesPage'
 import AuthCallbackPage from './pages/AuthCallbackPage'
-import Layout from './components/Layout' 
+import Layout from './components/Layout'
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -36,7 +36,7 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={!session ? <LoginPage /> : <Navigate to="/" />} />
-        <Route path="/auth/callback" element={<AuthCallbackPage />} />  {/* ← 추가 */}
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
         <Route element={session ? <Layout /> : <Navigate to="/login" />}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/voc" element={<VocListPage />} />
