@@ -1,0 +1,2 @@
+ALTER TABLE phones
+    ALTER COLUMN device_id DROP NOT NULL;
