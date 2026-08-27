@@ -9,6 +9,7 @@ import VocDetailPage from './pages/VocDetailPage'
 import PhonesPage from './pages/PhonesPage'
 import CategoriesPage from './pages/CategoriesPage'
 import AuthCallbackPage from './pages/AuthCallbackPage'
+import Layout from './components/Layout' 
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
