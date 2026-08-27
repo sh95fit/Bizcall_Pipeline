@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
-  type CategoricalChartState
+  type BarRectangleItem,
 } from 'recharts'
 import { supabase } from '../lib/supabase'
 
@@ -19,6 +19,9 @@ interface ChartDatum {
   dateISO: string
   [category: string]: string | number
 }
+
+// recharts Bar onClick의 data 파라미터: BarRectangleItem에 커스텀 필드가 런타임에 존재
+type BarClickData = BarRectangleItem & ChartDatum
 
 /* ───────── 상수 ───────── */
 const COLORS = [
@@ -41,12 +44,12 @@ export default function DashboardPage() {
   const def = getDefaultRange()
 
   const [dateFrom, setDateFrom] = useState(def.from)
-  const [dateTo, setDateTo] = useState(def.to)
-  const [totalVoc, setTotalVoc] = useState(0)
-  const [todayVoc, setTodayVoc] = useState(0)
+  const [dateTo, setDateTo]     = useState(def.to)
+  const [totalVoc, setTotalVoc]         = useState(0)
+  const [todayVoc, setTodayVoc]         = useState(0)
   const [activePhones, setActivePhones] = useState(0)
-  const [vocRows, setVocRows] = useState<VocRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const [vocRows, setVocRows]           = useState<VocRow[]>([])
+  const [loading, setLoading]           = useState(true)
 
   const fetchData = async () => {
     setLoading(true)
@@ -102,7 +105,7 @@ export default function DashboardPage() {
     vocRows.forEach(row => {
       if (!row.call_started_at) return
       const d = new Date(row.call_started_at)
-      const iso = d.toISOString().slice(0, 10)
+      const iso   = d.toISOString().slice(0, 10)
       const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
       const catName = row.categories?.[0]?.name ?? '미분류'
       catSet.add(catName)
@@ -112,7 +115,7 @@ export default function DashboardPage() {
     })
 
     const sorted = Object.entries(dateMap).sort(([a], [b]) => a.localeCompare(b))
-    const keys = Array.from(catSet)
+    const keys   = Array.from(catSet)
 
     const data: ChartDatum[] = sorted.map(([iso, vals]) => ({
       date: vals.__label as string,
@@ -123,12 +126,11 @@ export default function DashboardPage() {
     return { chartData: data, categoryKeys: keys }
   }, [vocRows])
 
-  /* ── 바 클릭 → VOC 목록 이동 ── */
-  // CategoricalChartState를 사용해 정확한 시그니처 맞춤
-  const handleBarClick = (state: CategoricalChartState) => {
-    const iso = (state?.activePayload?.[0]?.payload as ChartDatum | undefined)?.dateISO
-    if (!iso) return
-    navigate(`/voc?date=${iso}`)
+  /* ── Bar 클릭 핸들러 ──
+     런타임에는 ChartDatum 필드가 실제로 존재하므로 정상 동작
+     타입은 BarRectangleItem & ChartDatum 로 선언해 에러 해소 */
+  const handleBarClick = (data: BarClickData) => {
+    if (data?.dateISO) navigate(`/voc?date=${data.dateISO}`)
   }
 
   const cards = [
@@ -144,15 +146,13 @@ export default function DashboardPage() {
         <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
         <div className="flex items-center gap-2 text-sm">
           <input
-            type="date"
-            value={dateFrom}
+            type="date" value={dateFrom}
             onChange={e => setDateFrom(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <span className="text-gray-400">~</span>
           <input
-            type="date"
-            value={dateTo}
+            type="date" value={dateTo}
             onChange={e => setDateTo(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
           />
@@ -194,7 +194,6 @@ export default function DashboardPage() {
                 <BarChart
                   data={chartData}
                   margin={{ top: 4, right: 16, left: 0, bottom: 4 }}
-                  onClick={handleBarClick}
                   style={{ cursor: 'pointer' }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -208,6 +207,7 @@ export default function DashboardPage() {
                       dataKey={cat}
                       stackId="a"
                       fill={COLORS[i % COLORS.length]}
+                      onClick={handleBarClick}
                     />
                   ))}
                 </BarChart>
