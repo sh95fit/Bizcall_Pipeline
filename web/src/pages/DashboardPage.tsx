@@ -20,11 +20,17 @@ interface VocRecord {
   caller_number: string | null
   call_direction: string | null
   call_started_at: string | null
+  call_ended_at: string | null
+  duration_sec: number | null
   processing_status: string
   sentiment: string | null
   summary: string | null
+  transcript: string | null
+  keywords: string[] | null
   action_required: boolean
   action_memo: string | null
+  is_permanent: boolean
+  s3_key: string | null
 }
 
 interface ChartDatum {
@@ -40,7 +46,6 @@ const COLORS = [
   '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
   '#fb7185', '#facc15', '#34d399', '#38bdf8',
 ]
-
 const STATUS_LABEL: Record<string, string> = {
   pending: '대기', processing: '처리중', completed: '완료', failed: '실패',
 }
@@ -72,7 +77,114 @@ const formatDate = (str: string | null) => {
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/* ─── 컴포넌트 ─── */
+const formatDuration = (sec: number | null) => {
+  if (sec === null) return '-'
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}′${String(s).padStart(2, '0')}″`
+}
+
+/* ─── 아코디언 상세 패널 ─── */
+function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: () => void }) {
+  return (
+    <tr>
+      <td colSpan={8} className="bg-gray-50 border-b border-green-100 px-0 py-0">
+        <div className="px-4 py-4 grid grid-cols-2 gap-4 text-xs">
+
+          {/* 왼쪽: 통화 정보 + 키워드 + 후속조치 */}
+          <div className="space-y-3">
+            {/* 통화 기본 정보 */}
+            <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-1.5">
+              <p className="text-xs font-semibold text-gray-500 mb-2">통화 정보</p>
+              <div className="flex justify-between">
+                <span className="text-gray-400">통화 시작</span>
+                <span className="text-gray-700">{formatDate(record.call_started_at)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">통화 시간</span>
+                <span className="text-gray-700">{formatDuration(record.duration_sec)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">감성</span>
+                <span className={record.sentiment ? SENTIMENT_COLOR[record.sentiment] : 'text-gray-300'}>
+                  {record.sentiment ? (SENTIMENT_LABEL[record.sentiment] ?? record.sentiment) : '-'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">처리 상태</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-xs ${STATUS_COLOR[record.processing_status] ?? 'bg-gray-100 text-gray-500'}`}>
+                  {STATUS_LABEL[record.processing_status] ?? record.processing_status}
+                </span>
+              </div>
+              {record.is_permanent && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">영구 저장</span>
+                  <span className="text-blue-500">✔ 영구보관</span>
+                </div>
+              )}
+            </div>
+
+            {/* 키워드 */}
+            {record.keywords && record.keywords.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">키워드</p>
+                <div className="flex flex-wrap gap-1">
+                  {record.keywords.map(k => (
+                    <span key={k} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full text-xs">
+                      {k}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 후속 조치 */}
+            {record.action_required && (
+              <div className="bg-orange-50 rounded-lg border border-orange-100 p-3">
+                <p className="text-xs font-semibold text-orange-600 mb-1">⚠ 후속 조치 필요</p>
+                <p className="text-gray-700">{record.action_memo ?? '조치 내용 없음'}</p>
+              </div>
+            )}
+          </div>
+
+          {/* 오른쪽: 요약 + 스크립트 */}
+          <div className="space-y-3">
+            {/* 요약 */}
+            <div className="bg-white rounded-lg border border-gray-200 p-3">
+              <p className="text-xs font-semibold text-gray-500 mb-2">요약</p>
+              <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
+                {record.summary ?? <span className="text-gray-300">요약 없음</span>}
+              </p>
+            </div>
+
+            {/* 스크립트 */}
+            {record.transcript && (
+              <div className="bg-white rounded-lg border border-gray-200 p-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">통화 내용</p>
+                <p className="text-gray-600 leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto">
+                  {record.transcript}
+                </p>
+              </div>
+            )}
+
+            {/* 상세 페이지 이동 버튼 */}
+            <div className="flex justify-end">
+              <button
+                onClick={onOpenFull}
+                className="text-xs text-green-700 border border-green-300 rounded-lg px-3 py-1.5 hover:bg-green-50 transition-colors"
+              >
+                전체 상세 보기 →
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+/* ─── 메인 컴포넌트 ─── */
 export default function DashboardPage() {
   const navigate = useNavigate()
   const def = getDefaultRange()
@@ -85,17 +197,21 @@ export default function DashboardPage() {
   const [vocRows, setVocRows]           = useState<VocRow[]>([])
   const [loading, setLoading]           = useState(true)
 
-  // 드롭다운 관련
-  const [selectedDate, setSelectedDate]       = useState<string | null>(null)
-  const [drillRecords, setDrillRecords]       = useState<VocRecord[]>([])
-  const [drillLoading, setDrillLoading]       = useState(false)
+  // 날짜 드롭다운
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [drillRecords, setDrillRecords] = useState<VocRecord[]>([])
+  const [drillLoading, setDrillLoading] = useState(false)
 
-  /* ── 차트·집계 데이터 fetch ── */
+  // 행 아코디언
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  /* ── 차트·집계 fetch ── */
   const fetchData = async () => {
     setLoading(true)
     const fromISO  = `${dateFrom} 00:00:00`
     const toISO    = `${dateTo} 23:59:59`
-    const todayISO = `${new Date().toISOString().slice(0, 10)} 00:00:00`
+    const todayStr = new Date().toISOString().slice(0, 10)
+    const todayISO = `${todayStr} 00:00:00`
 
     const [
       { count: tv },
@@ -135,12 +251,13 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchData() }, [dateFrom, dateTo])
 
-  /* ── 드릴다운: 특정 날짜 VOC 목록 fetch ── */
+  /* ── 드릴다운 fetch ── */
   const fetchDrillDown = async (dateISO: string) => {
     setDrillLoading(true)
+    setExpandedId(null)
     const { data, error } = await supabase
       .from('voc_records')
-      .select('id,phone_name,caller_number,call_direction,call_started_at,processing_status,sentiment,summary,action_required,action_memo')
+      .select('id,phone_name,caller_number,call_direction,call_started_at,call_ended_at,duration_sec,processing_status,sentiment,summary,transcript,keywords,action_required,action_memo,is_permanent,s3_key')
       .eq('is_deleted', false)
       .gte('call_started_at', `${dateISO} 00:00:00`)
       .lte('call_started_at', `${dateISO} 23:59:59`)
@@ -153,24 +270,29 @@ export default function DashboardPage() {
   const handleBarClick = (data: BarClickData) => {
     if (!data?.dateISO) return
     if (selectedDate === data.dateISO) {
-      // 같은 날짜 재클릭 → 접기
       setSelectedDate(null)
       setDrillRecords([])
+      setExpandedId(null)
     } else {
       setSelectedDate(data.dateISO)
       fetchDrillDown(data.dateISO)
     }
   }
 
+  /* ── 행 클릭: 아코디언 토글 ── */
+  const handleRowClick = (id: string) => {
+    setExpandedId(prev => prev === id ? null : id)
+  }
+
   /* ── 차트 데이터 가공 ── */
   const { chartData, categoryKeys } = useMemo(() => {
     const dateMap: Record<string, Record<string, number | string>> = {}
-    const catSet  = new Set<string>()
+    const catSet = new Set<string>()
 
     vocRows.forEach(row => {
       if (!row.call_started_at) return
-      const iso   = row.call_started_at.slice(0, 10)
-      const label = `${iso.slice(5, 7)}/${iso.slice(8, 10)}`
+      const iso     = row.call_started_at.slice(0, 10)
+      const label   = `${iso.slice(5, 7)}/${iso.slice(8, 10)}`
       const catName = row.categories?.name ?? '미분류'
       catSet.add(catName)
       if (!dateMap[iso]) dateMap[iso] = { __label: label }
@@ -200,12 +322,12 @@ export default function DashboardPage() {
         <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
         <div className="flex items-center gap-2 text-sm">
           <input type="date" value={dateFrom}
-            onChange={e => { setDateFrom(e.target.value); setSelectedDate(null) }}
+            onChange={e => { setDateFrom(e.target.value); setSelectedDate(null); setExpandedId(null) }}
             className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <span className="text-gray-400">~</span>
           <input type="date" value={dateTo}
-            onChange={e => { setDateTo(e.target.value); setSelectedDate(null) }}
+            onChange={e => { setDateTo(e.target.value); setSelectedDate(null); setExpandedId(null) }}
             className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
           />
         </div>
@@ -234,7 +356,7 @@ export default function DashboardPage() {
               일자별 · 카테고리별 VOC 현황
             </p>
             <p className="text-xs text-gray-400 mb-4">
-              막대를 클릭하면 해당 일자 VOC 목록이 아래에 펼쳐집니다
+              막대 클릭 → 목록 펼치기 &nbsp;|&nbsp; 목록 행 클릭 → 상세 내용 펼치기
             </p>
 
             {chartData.length === 0 ? (
@@ -251,21 +373,14 @@ export default function DashboardPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                  <Tooltip
-                    formatter={(value, name) => [value, name]}
-                    contentStyle={{ fontSize: 12 }}
-                  />
+                  <Tooltip formatter={(value, name) => [value, name]} contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   {categoryKeys.map((cat, i) => (
                     <Bar
                       key={cat}
                       dataKey={cat}
                       stackId="a"
-                      fill={selectedDate
-                        ? (chartData.find(d => d.dateISO === selectedDate)
-                          ? COLORS[i % COLORS.length]
-                          : COLORS[i % COLORS.length] + '66')  // 선택 안된 날 흐리게
-                        : COLORS[i % COLORS.length]}
+                      fill={COLORS[i % COLORS.length]}
                       onClick={handleBarClick}
                     />
                   ))}
@@ -274,10 +389,11 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* ── 드롭다운 VOC 목록 ── */}
+          {/* ── 드릴다운 패널 ── */}
           {selectedDate && (
             <div className="bg-white rounded-xl border border-green-200 shadow-sm overflow-hidden">
-              {/* 드롭다운 헤더 */}
+
+              {/* 패널 헤더 */}
               <div className="flex items-center justify-between px-5 py-3 bg-green-50 border-b border-green-100">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-green-800">
@@ -297,7 +413,7 @@ export default function DashboardPage() {
                     전체 페이지로 보기 →
                   </button>
                   <button
-                    onClick={() => { setSelectedDate(null); setDrillRecords([]) }}
+                    onClick={() => { setSelectedDate(null); setDrillRecords([]); setExpandedId(null) }}
                     className="text-gray-400 hover:text-gray-600 text-lg leading-none"
                   >
                     ✕
@@ -313,61 +429,76 @@ export default function DashboardPage() {
               ) : (
                 <table className="w-full text-xs table-fixed">
                   <colgroup>
-                    <col style={{ width: '8%' }} />
-                    <col style={{ width: '11%' }} />
-                    <col style={{ width: '5%' }} />
-                    <col style={{ width: '9%' }} />
-                    <col style={{ width: '5%' }} />
-                    <col style={{ width: '6%' }} />
-                    <col style={{ width: '36%' }} />
-                    <col style={{ width: '20%' }} />
+                    <col style={{ width: '2%' }} />   {/* 토글 아이콘 */}
+                    <col style={{ width: '8%' }} />   {/* 업무폰 */}
+                    <col style={{ width: '11%' }} />  {/* 발신번호 */}
+                    <col style={{ width: '5%' }} />   {/* 방향 */}
+                    <col style={{ width: '9%' }} />   {/* 통화시작 */}
+                    <col style={{ width: '5%' }} />   {/* 감성 */}
+                    <col style={{ width: '6%' }} />   {/* 상태 */}
+                    <col style={{ width: '54%' }} />  {/* 요약 (넓게) */}
                   </colgroup>
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
-                      {['업무폰', '발신번호', '방향', '통화시작', '감성', '상태', '요약', '후속 조치'].map(h => (
+                      <th />
+                      {['업무폰', '발신번호', '방향', '통화시작', '감성', '상태', '요약'].map(h => (
                         <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {drillRecords.map(r => (
-                      <tr key={r.id}
-                        onClick={() => navigate(`/voc/${r.id}`)}
-                        className="hover:bg-gray-50 cursor-pointer">
+                      <>
+                        {/* 목록 행 */}
+                        <tr
+                          key={r.id}
+                          onClick={() => handleRowClick(r.id)}
+                          className={`cursor-pointer transition-colors ${expandedId === r.id ? 'bg-green-50' : 'hover:bg-gray-50'}`}
+                        >
+                          {/* 토글 아이콘 */}
+                          <td className="px-2 py-2.5 text-center text-gray-300">
+                            <span className={`inline-block transition-transform duration-200 ${expandedId === r.id ? 'rotate-90' : ''}`}>
+                              ▶
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
+                            {r.phone_name ?? '-'}
+                          </td>
+                          <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
+                            {r.caller_number ?? '-'}
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            {r.call_direction === 'incoming'
+                              ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
+                              : r.call_direction === 'outgoing'
+                              ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
+                              : <span className="text-gray-300">-</span>}
+                          </td>
+                          <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
+                            {formatDate(r.call_started_at)}
+                          </td>
+                          <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
+                            {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            <span className={`px-1.5 py-0.5 rounded-full ${STATUS_COLOR[r.processing_status] ?? 'bg-gray-100 text-gray-500'}`}>
+                              {STATUS_LABEL[r.processing_status] ?? r.processing_status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
+                            {r.summary ?? <span className="text-gray-200">-</span>}
+                          </td>
+                        </tr>
 
-                        <td className="px-3 py-2 text-gray-700 truncate overflow-hidden whitespace-nowrap">
-                          {r.phone_name ?? '-'}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-gray-600 whitespace-nowrap">
-                          {r.caller_number ?? '-'}
-                        </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          {r.call_direction === 'incoming'
-                            ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
-                            : r.call_direction === 'outgoing'
-                            ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
-                            : <span className="text-gray-300">-</span>}
-                        </td>
-                        <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
-                          {formatDate(r.call_started_at)}
-                        </td>
-                        <td className={`px-3 py-2 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
-                          {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
-                        </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <span className={`px-1.5 py-0.5 rounded-full ${STATUS_COLOR[r.processing_status] ?? 'bg-gray-100 text-gray-500'}`}>
-                            {STATUS_LABEL[r.processing_status] ?? r.processing_status}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-gray-400 truncate overflow-hidden whitespace-nowrap">
-                          {r.summary ?? <span className="text-gray-200">-</span>}
-                        </td>
-                        <td className="px-3 py-2 truncate overflow-hidden whitespace-nowrap">
-                          {r.action_required
-                            ? <span className="text-orange-500">⚠ {r.action_memo ?? '조치 필요'}</span>
-                            : <span className="text-gray-200">-</span>}
-                        </td>
-                      </tr>
+                        {/* 아코디언 상세 패널 */}
+                        {expandedId === r.id && (
+                          <DetailPanel
+                            key={`detail-${r.id}`}
+                            record={r}
+                            onOpenFull={() => navigate(`/voc/${r.id}`)}
+                          />
+                        )}
+                      </>
                     ))}
                   </tbody>
                 </table>
