@@ -93,9 +93,9 @@ export default function DashboardPage() {
   /* ── 차트·집계 데이터 fetch ── */
   const fetchData = async () => {
     setLoading(true)
-    const fromISO  = `${dateFrom}T00:00:00+09:00`
-    const toISO    = `${dateTo}T23:59:59+09:00`
-    const todayISO = `${new Date().toISOString().slice(0, 10)}T00:00:00+09:00`
+    const fromISO  = `${dateFrom} 00:00:00`
+    const toISO    = `${dateTo} 23:59:59`
+    const todayISO = `${new Date().toISOString().slice(0, 10)} 00:00:00`
 
     const [
       { count: tv },
@@ -142,8 +142,8 @@ export default function DashboardPage() {
       .from('voc_records')
       .select('id,phone_name,caller_number,call_direction,call_started_at,processing_status,sentiment,summary,action_required,action_memo')
       .eq('is_deleted', false)
-      .gte('call_started_at', `${dateISO}T00:00:00+09:00`)
-      .lte('call_started_at', `${dateISO}T23:59:59+09:00`)
+      .gte('call_started_at', `${dateISO} 00:00:00`)
+      .lte('call_started_at', `${dateISO} 23:59:59`)
       .order('call_started_at', { ascending: false })
     if (!error && data) setDrillRecords(data)
     setDrillLoading(false)
