@@ -1,5 +1,7 @@
--- Hook 함수 반환 타입을 jsonb로 수정 (Supabase Auth Hook 요구사항)
-CREATE OR REPLACE FUNCTION public.restrict_to_lunchlab_domain()
+-- 기존 함수 삭제 후 재생성 (반환 타입 변경은 DROP 필요)
+DROP FUNCTION IF EXISTS public.restrict_to_lunchlab_domain();
+
+CREATE FUNCTION public.restrict_to_lunchlab_domain()
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -8,7 +10,7 @@ DECLARE
   v_email TEXT;
 BEGIN
   v_email := (current_setting('request.jwt.claims', true)::jsonb)->>'email';
-  
+
   IF v_email NOT LIKE '%@lunchlab.me' THEN
     RETURN jsonb_build_object(
       'error', jsonb_build_object(
