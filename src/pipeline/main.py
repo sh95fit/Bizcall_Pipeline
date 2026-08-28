@@ -10,6 +10,9 @@ from ai import get_ai_provider
 s3 = boto3.client("s3")
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET_KEY"])
 
+# ── 프롬프트 캐시 (Lambda 콜드 스타트 시 1회 로딩) ──────────────────────────
+_prompt_cache: dict | None = None
+
 
 def parse_s3_key(key: str) -> dict:
     try:
@@ -31,7 +34,6 @@ def parse_s3_key(key: str) -> dict:
         return {}
 
 
-# S3 Object Metadata에서 통화 종료 시각 / 통화 시간 읽기
 def get_call_timing_from_s3(bucket: str, key: str) -> dict:
     """
     앱이 S3 업로드 시 ObjectMetadata에 저장한 커스텀 헤더를 읽어 반환.
@@ -46,8 +48,8 @@ def get_call_timing_from_s3(bucket: str, key: str) -> dict:
         head = s3.head_object(Bucket=bucket, Key=key)
         meta = head.get("Metadata", {})
 
-        call_ended_at = meta.get("call-end-time")     # "yyyy-MM-dd'T'HH:mm:ss"
-        duration_str = meta.get("call-duration-sec")  # "정수 문자열"
+        call_ended_at = meta.get("call-end-time")
+        duration_str = meta.get("call-duration-sec")
 
         return {
             "call_ended_at": call_ended_at,
@@ -73,13 +75,41 @@ def get_phone_record(phone_id: str) -> dict:
 
 
 def get_active_categories() -> list:
+    """
+    활성 상위 카테고리 목록 조회.
+    description 포함하여 AI가 카테고리를 더 정확히 인식하도록 함.
+    """
     res = supabase.table("categories") \
-        .select("id, name") \
+        .select("id, name, description") \
         .is_("parent_id", None) \
         .eq("is_active", True) \
         .order("sort_order") \
         .execute()
     return res.data
+
+
+def load_prompt_templates() -> dict:
+    """
+    prompt_templates 테이블에서 is_active=true인 프롬프트를 로딩.
+    Lambda 컨테이너 수명 동안 캐싱 (콜드 스타트 시 1회만 조회).
+    DB 조회 실패 시 빈 dict 반환 → AI 코드에서 코드 내장 기본값 사용.
+    """
+    global _prompt_cache
+    if _prompt_cache is not None:
+        return _prompt_cache
+
+    try:
+        res = supabase.table("prompt_templates") \
+            .select("key, content") \
+            .eq("is_active", True) \
+            .execute()
+        _prompt_cache = {row["key"]: row["content"] for row in (res.data or [])}
+        print(f"프롬프트 로딩 완료: {list(_prompt_cache.keys())}")
+    except Exception as e:
+        print(f"프롬프트 로딩 실패 (기본값 사용): {e}")
+        _prompt_cache = {}
+
+    return _prompt_cache
 
 
 def is_duplicate_insert_error(e: Exception) -> bool:
@@ -109,8 +139,8 @@ def save_silent_record(meta: dict, phone: dict, s3_key: str, timing: dict):
             "caller_number": meta.get("caller_number"),
             "call_direction": meta.get("direction"),
             "call_started_at": meta.get("call_started_at"),
-            "call_ended_at": timing.get("call_ended_at"),   
-            "duration_sec": timing.get("duration_sec"),     
+            "call_ended_at": timing.get("call_ended_at"),
+            "duration_sec": timing.get("duration_sec"),
             "s3_key": s3_key,
             "processing_status": "silent_skipped",
         }).execute()
@@ -145,7 +175,6 @@ def lambda_handler(event, context):
         meta = parse_s3_key(key)
         print("Parsed metadata:", meta)
 
-        # ★ S3 Object Metadata에서 통화 종료 시각 / 통화 시간 읽기
         timing = get_call_timing_from_s3(bucket, key)
         print(f"Call timing: end={timing.get('call_ended_at')}, "
               f"duration={timing.get('duration_sec')}s")
@@ -162,33 +191,35 @@ def lambda_handler(event, context):
             transcript = None
             analysis = None
 
-            # ── STT 단계 ──────────────────────────────────────
+            # ── STT 단계 ──────────────────────────────────────────────────
             if stt:
                 transcript = stt.transcribe(tmp_path)
                 if transcript is None:
                     print("STT 무음 감지 → AI/DB 단계 생략")
-                    save_silent_record(meta, phone, key, timing)  # ★ timing 전달
+                    save_silent_record(meta, phone, key, timing)
                     continue
                 print(f"Transcript ({len(transcript)}자): {transcript[:200]}")
             else:
                 print("STT_PROVIDER=skip → AI 오디오 직접 처리 모드")
 
-            # ── AI 분석 단계 ──────────────────────────────────
+            # ── AI 분석 단계 ──────────────────────────────────────────────
             categories = get_active_categories()
+            prompts = load_prompt_templates()
             transcript, analysis = ai.analyze(
                 categories=categories,
+                prompts=prompts,
                 transcript=transcript,
                 file_path=tmp_path if not transcript else None,
             )
 
             if transcript is None or analysis is None:
                 print("AI 무음 감지 → DB 단계 생략")
-                save_silent_record(meta, phone, key, timing)  # ★ timing 전달
+                save_silent_record(meta, phone, key, timing)
                 continue
 
             print("Analysis:", json.dumps(analysis, ensure_ascii=False))
 
-            # ── DB 저장 단계 ──────────────────────────────────
+            # ── DB 저장 단계 ──────────────────────────────────────────────
             category_id = next(
                 (c["id"] for c in categories if c["name"] == analysis.get("category")),
                 None
@@ -200,8 +231,8 @@ def lambda_handler(event, context):
                 "caller_number": meta.get("caller_number"),
                 "call_direction": meta.get("direction"),
                 "call_started_at": meta.get("call_started_at"),
-                "call_ended_at": timing.get("call_ended_at"),  
-                "duration_sec": timing.get("duration_sec"),    
+                "call_ended_at": timing.get("call_ended_at"),
+                "duration_sec": timing.get("duration_sec"),
                 "s3_key": key,
                 "transcript": transcript,
                 "summary": analysis.get("summary"),
