@@ -6,11 +6,19 @@ export default function AuthCallbackPage() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
+    const handleCallback = async () => {
+      const { error } = await supabase.auth.exchangeCodeForSession(
+        window.location.href
+      )
+      if (error) {
+        console.error('Auth callback error:', error.message)
+        navigate('/login', { replace: true })
+      } else {
         navigate('/', { replace: true })
       }
-    })
+    }
+
+    handleCallback()
   }, [navigate])
 
   return (
