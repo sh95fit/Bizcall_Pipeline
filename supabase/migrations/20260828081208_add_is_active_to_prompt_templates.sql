@@ -1,0 +1,2 @@
+ALTER TABLE prompt_templates
+  ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
