@@ -26,6 +26,11 @@ PRESIGN_EXPIRES_SEC = 3600  # 1시간
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
+# ── CORS 허용 도메인 ───────────────────────────────────────────────────────
+ALLOWED_ORIGINS = {
+    "https://bizcall-admin.pages.dev",
+    "https://bizcall.lunchlab.me",
+}
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
@@ -45,11 +50,13 @@ def _get_jwks() -> dict:
     return _jwks_cache
 
 
-def cors_headers() -> dict:
-    """Cloudflare Pages 도메인에서 오는 요청을 허용하는 CORS 헤더."""
-    origin = os.environ.get("ALLOWED_ORIGIN", "*")
+def cors_headers(event: dict = {}) -> dict:
+    """요청 Origin이 허용 목록에 있으면 그대로 반환, 없으면 기본 도메인 반환."""
+    headers = event.get("headers") or {}
+    origin = headers.get("origin") or headers.get("Origin", "")
+    allowed = origin if origin in ALLOWED_ORIGINS else "https://bizcall.lunchlab.me"
     return {
-        "Access-Control-Allow-Origin":  origin,
+        "Access-Control-Allow-Origin":  allowed,
         "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
     }
@@ -66,11 +73,11 @@ def response(status_code: int, body: dict) -> dict:
     }
 
 
-def options_response() -> dict:
+def options_response(event: dict = {}) -> dict:
     """OPTIONS preflight 응답 (CORS 핸드셰이크)"""
     return {
         "statusCode": 204,
-        "headers": cors_headers(),
+        "headers": cors_headers(event),
         "body": "",
     }
 
@@ -269,7 +276,7 @@ def lambda_handler(event, context):
 
     # OPTIONS preflight는 인증 없이 즉시 응답
     if http_method == "OPTIONS":
-        return options_response()
+        return options_response(event)
 
     # 모든 실 요청은 JWT 인증 필수
     jwt_payload = verify_supabase_jwt(event)
