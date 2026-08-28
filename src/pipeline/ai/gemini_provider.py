@@ -65,7 +65,7 @@ FILE_READY_INTERVAL_S = 2
 class GeminiAIProvider(AIProvider):
     def __init__(self):
         self.client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        self.model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+        self.model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
     def supports_audio(self) -> bool:
         return True
