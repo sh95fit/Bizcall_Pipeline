@@ -267,15 +267,16 @@ export default function DashboardPage() {
   }
 
   /* ── 차트 막대 클릭 ── */
-  const handleBarClick = (data: BarClickData) => {
-    if (!data?.dateISO) return
-    if (selectedDate === data.dateISO) {
+  const handleBarClick = (data: BarRectangleItem) => {
+    const d = data as unknown as BarClickData
+    if (!d?.dateISO) return
+    if (selectedDate === d.dateISO) {
       setSelectedDate(null)
       setDrillRecords([])
       setExpandedId(null)
     } else {
-      setSelectedDate(data.dateISO)
-      fetchDrillDown(data.dateISO)
+      setSelectedDate(d.dateISO)
+      fetchDrillDown(d.dateISO)
     }
   }
 

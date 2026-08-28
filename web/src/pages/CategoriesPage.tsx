@@ -90,10 +90,6 @@ export default function CategoriesPage() {
 
   const parentCategories = categories.filter(c => !c.parent_id)
   const getChildren = (parentId: string) => categories.filter(c => c.parent_id === parentId)
-  const getParentName = (parentId: string | null) => {
-    if (!parentId) return null
-    return categories.find(c => c.id === parentId)?.name ?? null
-  }
 
   return (
     <div>
