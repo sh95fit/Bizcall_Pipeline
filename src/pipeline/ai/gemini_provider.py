@@ -5,17 +5,21 @@ from google import genai
 from google.genai import types
 from .base import AIProvider
 
+# ── 코드 내장 기본값 (DB 프롬프트 없을 때 폴백) ──────────────────────────────
+DEFAULT_BUSINESS_CONTEXT = "이 음성 통화는 업무용 전화 서비스에서 녹음된 고객 응대 내용입니다."
 
-CATEGORY_GUIDE = """카테고리 분류 기준:
+DEFAULT_CATEGORY_GUIDE = """카테고리 분류 기준:
 - 영업: 신규 가입, 상품/서비스 구매, 요금제 변경, 계약 체결 등 매출과 직결된 통화
 - 문의: 이용 방법, 절차, 일반 정보 확인 등 단순 정보성 질문
 - 항의: 불만 제기, 피해 보상 요구, 서비스 장애 신고 등 부정적 피드백
 - 기타: 위 카테고리로 분류하기 어려운 통화"""
 
-SENTIMENT_GUIDE = """감성 분류 기준:
+DEFAULT_SENTIMENT_GUIDE = """감성 분류 기준:
 - positive: 고객이 만족하거나 긍정적인 반응을 보이는 통화
 - neutral: 감정적 표현이 없거나 중립적인 통화
 - negative: 고객이 불만, 불쾌감, 실망감을 표현하는 통화"""
+
+DEFAULT_ACTION_GUIDE = "통화 내용 중 후속 조치가 필요한 항목이 있으면 action_required를 true로 설정하세요."
 
 OUTPUT_CAUTION = """주의사항:
 - 반드시 JSON만 출력하세요
@@ -37,20 +41,47 @@ class GeminiAIProvider(AIProvider):
     def supports_audio(self) -> bool:
         return True
 
-    def _build_category_guide(self, categories: list) -> str:
-        category_list = ", ".join([c["name"] for c in categories])
-        return f"[카테고리 목록]\n{category_list}\n\n{CATEGORY_GUIDE}"
+    def _get_prompt(self, prompts: dict, key: str, default: str) -> str:
+        """
+        DB 프롬프트(prompts dict)에서 key를 찾아 반환.
+        없거나 비어있으면 코드 내장 기본값(default) 반환.
+        """
+        value = prompts.get(key, "").strip()
+        return value if value else default
 
-    def _build_text_prompt(self, transcript: str, categories: list) -> str:
+    def _build_category_section(self, categories: list, prompts: dict) -> str:
+        """
+        카테고리 목록 + description + 카테고리 가이드 조합.
+        """
+        lines = []
+        for c in categories:
+            name = c["name"]
+            desc = c.get("description") or ""
+            lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        category_list = "\n".join(lines)
+
+        category_guide = self._get_prompt(prompts, "category_guide", DEFAULT_CATEGORY_GUIDE)
+
+        return f"[카테고리 목록]\n{category_list}\n\n{category_guide}"
+
+    def _build_text_prompt(self, transcript: str, categories: list, prompts: dict) -> str:
+        business_context = self._get_prompt(prompts, "business_context", DEFAULT_BUSINESS_CONTEXT)
+        sentiment_guide = self._get_prompt(prompts, "sentiment_guide", DEFAULT_SENTIMENT_GUIDE)
+        action_guide = self._get_prompt(prompts, "action_guide", DEFAULT_ACTION_GUIDE)
+
         return f"""당신은 비즈니스 전화 통화를 분석하는 전문 AI입니다.
+{business_context}
 아래 통화 내용을 분석하여 JSON 형식으로 결과를 반환하세요.
 
 [통화 내용]
 {transcript}
 
-{self._build_category_guide(categories)}
+{self._build_category_section(categories, prompts)}
 
-{SENTIMENT_GUIDE}
+{sentiment_guide}
+
+[액션 가이드]
+{action_guide}
 
 [출력 형식]
 {{
@@ -64,14 +95,22 @@ class GeminiAIProvider(AIProvider):
 
 {OUTPUT_CAUTION}"""
 
-    def _build_audio_prompt(self, categories: list) -> str:
+    def _build_audio_prompt(self, categories: list, prompts: dict) -> str:
+        business_context = self._get_prompt(prompts, "business_context", DEFAULT_BUSINESS_CONTEXT)
+        sentiment_guide = self._get_prompt(prompts, "sentiment_guide", DEFAULT_SENTIMENT_GUIDE)
+        action_guide = self._get_prompt(prompts, "action_guide", DEFAULT_ACTION_GUIDE)
+
         return f"""당신은 비즈니스 전화 통화를 분석하는 전문 AI입니다.
+{business_context}
 첨부된 오디오 파일은 실제 비즈니스 전화 통화 녹음입니다.
 오디오를 직접 듣고 전체 내용을 텍스트로 변환한 뒤, 아래 항목을 분석하여 JSON 형식으로 반환하세요.
 
-{self._build_category_guide(categories)}
+{self._build_category_section(categories, prompts)}
 
-{SENTIMENT_GUIDE}
+{sentiment_guide}
+
+[액션 가이드]
+{action_guide}
 
 [출력 형식]
 {{
@@ -112,15 +151,22 @@ class GeminiAIProvider(AIProvider):
     def analyze(
         self,
         categories: list,
+        prompts: dict = None,
         transcript: str | None = None,
-        file_path: str | None = None
+        file_path: str | None = None,
     ) -> tuple[str | None, dict | None]:
+        """
+        prompts: load_prompt_templates()에서 전달된 DB 프롬프트 dict.
+                 None 또는 빈 dict면 코드 내장 기본값 사용.
+        """
+        if prompts is None:
+            prompts = {}
 
         if transcript:
             print("Gemini 텍스트 분석 모드")
             result = self.client.models.generate_content(
                 model=self.model,
-                contents=self._build_text_prompt(transcript, categories),
+                contents=self._build_text_prompt(transcript, categories, prompts),
             )
             return transcript, json.loads(result.text.strip())
 
@@ -130,15 +176,12 @@ class GeminiAIProvider(AIProvider):
             try:
                 uploaded_file = self._upload_audio_file(file_path)
 
-                # 공식 문서 권장 방식:
-                # 업로드된 파일 객체를 contents 리스트에 직접 전달
-                # types.Part/FileData 래핑 없이 SDK가 자동 처리 → AFC 블로킹 없음
                 print("generate_content 호출 시작")
                 result = self.client.models.generate_content(
                     model=self.model,
                     contents=[
                         uploaded_file,
-                        self._build_audio_prompt(categories),
+                        self._build_audio_prompt(categories, prompts),
                     ],
                 )
                 print("generate_content 응답 수신 완료")
