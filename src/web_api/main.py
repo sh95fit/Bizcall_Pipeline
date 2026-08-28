@@ -4,9 +4,8 @@ bizcall-web-api Lambda
 엔드포인트:
   GET  /presign?key=<s3_key>   → S3 Pre-signed URL 발급
   POST /permanent              → 녹음 파일 영구 저장 (S3 복사 + DB 업데이트)
-  (Phase 3 추가 예정)
   GET  /prompts                → 프롬프트 템플릿 목록 조회
-  PUT  /prompts/<id>           → 프롬프트 템플릿 수정
+  PUT  /prompts/<key>          → 프롬프트 템플릿 수정
 """
 
 import json
@@ -47,9 +46,7 @@ def _get_jwks() -> dict:
 
 
 def cors_headers() -> dict:
-    """
-    Cloudflare Pages 도메인에서 오는 요청을 허용하는 CORS 헤더.
-    """
+    """Cloudflare Pages 도메인에서 오는 요청을 허용하는 CORS 헤더."""
     origin = os.environ.get("ALLOWED_ORIGIN", "*")
     return {
         "Access-Control-Allow-Origin":  origin,
@@ -156,19 +153,17 @@ def handle_permanent(event: dict) -> dict:
     except json.JSONDecodeError:
         return response(400, {"error": "잘못된 요청 형식입니다"})
 
-    voc_id  = body.get("voc_id", "").strip()
-    s3_key  = body.get("s3_key", "").strip()
+    voc_id = body.get("voc_id", "").strip()
+    s3_key = body.get("s3_key", "").strip()
 
     if not voc_id or not s3_key:
         return response(400, {"error": "voc_id와 s3_key가 필요합니다"})
 
-    # 경로 탈출 방어
     if not s3_key.startswith("recordings/"):
         return response(403, {"error": "허용되지 않은 S3 경로입니다"})
     if ".." in s3_key:
         return response(403, {"error": "허용되지 않은 S3 경로입니다"})
 
-    # 1) S3 복사: bizcall-recordings → bizcall-permanent (동일 키 유지)
     try:
         s3_client.copy_object(
             CopySource={"Bucket": S3_BUCKET, "Key": s3_key},
@@ -180,15 +175,78 @@ def handle_permanent(event: dict) -> dict:
         print(f"S3 복사 오류: {e}")
         return response(500, {"error": "파일 복사에 실패했습니다"})
 
-    # 2) DB 업데이트
     try:
-        result = supabase.from_("voc_records").update({"is_permanent": True}).eq("id", voc_id).execute()
+        supabase.from_("voc_records").update({"is_permanent": True}).eq("id", voc_id).execute()
         print(f"DB 업데이트 완료: voc_id={voc_id}")
     except Exception as e:
         print(f"DB 업데이트 오류: {e}")
         return response(500, {"error": "DB 업데이트에 실패했습니다"})
 
     return response(200, {"success": True, "message": "영구 저장 완료"})
+
+
+# ── /prompts ──────────────────────────────────────────────────────────────
+def handle_get_prompts(event: dict) -> dict:
+    """
+    GET /prompts
+    prompt_templates 전체 목록 반환 (is_active 포함).
+    """
+    try:
+        res = supabase.table("prompt_templates") \
+            .select("id, key, label, content, is_active, updated_at, updated_by") \
+            .order("key") \
+            .execute()
+        return response(200, {"prompts": res.data or []})
+    except Exception as e:
+        print(f"프롬프트 조회 오류: {e}")
+        return response(500, {"error": "프롬프트 조회에 실패했습니다"})
+
+
+def handle_put_prompt(event: dict, prompt_key: str, user_email: str) -> dict:
+    """
+    PUT /prompts/<key>
+    Body: { "content": "수정할 프롬프트 내용", "is_active": true }
+
+    content 또는 is_active 중 하나만 있어도 처리.
+    updated_by에 요청한 관리자 이메일 기록.
+    """
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "잘못된 요청 형식입니다"})
+
+    # 업데이트할 필드 구성
+    update_payload: dict = {"updated_by": user_email}
+
+    if "content" in body:
+        content = body["content"]
+        if not isinstance(content, str) or not content.strip():
+            return response(400, {"error": "content는 비어있을 수 없습니다"})
+        update_payload["content"] = content.strip()
+
+    if "is_active" in body:
+        if not isinstance(body["is_active"], bool):
+            return response(400, {"error": "is_active는 boolean 값이어야 합니다"})
+        update_payload["is_active"] = body["is_active"]
+
+    if len(update_payload) == 1:
+        # updated_by만 있으면 실제 변경 없음
+        return response(400, {"error": "content 또는 is_active 중 하나는 필요합니다"})
+
+    try:
+        res = supabase.table("prompt_templates") \
+            .update(update_payload) \
+            .eq("key", prompt_key) \
+            .execute()
+
+        if not res.data:
+            return response(404, {"error": f"프롬프트 키를 찾을 수 없습니다: {prompt_key}"})
+
+        print(f"프롬프트 수정 완료: key={prompt_key}, by={user_email}")
+        return response(200, {"success": True, "prompt": res.data[0]})
+    except Exception as e:
+        print(f"프롬프트 수정 오류: {e}")
+        return response(500, {"error": "프롬프트 수정에 실패했습니다"})
 
 
 # ── Lambda 핸들러 ─────────────────────────────────────────────────────────
@@ -214,15 +272,27 @@ def lambda_handler(event, context):
         return options_response()
 
     # 모든 실 요청은 JWT 인증 필수
-    payload = verify_supabase_jwt(event)
-    if payload is None:
+    jwt_payload = verify_supabase_jwt(event)
+    if jwt_payload is None:
         return response(401, {"error": "인증이 필요합니다"})
 
-    # 라우팅
+    user_email = jwt_payload.get("email", "unknown")
+
+    # ── 라우팅 ────────────────────────────────────────────────────────────
     if path == "/presign" and http_method == "GET":
         return handle_presign(event)
 
     if path == "/permanent" and http_method == "POST":
         return handle_permanent(event)
+
+    if path == "/prompts" and http_method == "GET":
+        return handle_get_prompts(event)
+
+    # PUT /prompts/{key} 처리
+    if path.startswith("/prompts/") and http_method == "PUT":
+        prompt_key = path[len("/prompts/"):]
+        if not prompt_key:
+            return response(400, {"error": "프롬프트 key가 필요합니다"})
+        return handle_put_prompt(event, prompt_key, user_email)
 
     return response(404, {"error": "존재하지 않는 엔드포인트입니다"})
