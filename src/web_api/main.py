@@ -24,7 +24,7 @@ PRESIGN_EXPIRES_SEC = 3600  # 1시간
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 s3_client = boto3.client("s3", region_name=AWS_REGION)
- 
+
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
@@ -153,8 +153,21 @@ def handle_presign(event: dict) -> dict:
 def lambda_handler(event, context):
     print("bizcall-web-api event:", json.dumps(event))
 
-    http_method = event.get("httpMethod", "")
-    path        = event.get("path", "")
+    # ── HTTP API (payload v2) vs REST API (payload v1) 양쪽 호환 ──
+    # HTTP API Gateway (v2): requestContext.http.method / rawPath
+    # REST API Gateway (v1): httpMethod / path
+    request_context = event.get("requestContext", {})
+    http_info = request_context.get("http", {})
+
+    http_method = (
+        http_info.get("method")          # HTTP API v2
+        or event.get("httpMethod", "")   # REST API v1
+    ).upper()
+
+    path = (
+        event.get("rawPath")             # HTTP API v2
+        or event.get("path", "")         # REST API v1
+    )
 
     # OPTIONS preflight는 인증 없이 즉시 응답
     if http_method == "OPTIONS":
