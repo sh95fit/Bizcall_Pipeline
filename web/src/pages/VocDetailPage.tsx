@@ -118,11 +118,33 @@ export default function VocDetailPage() {
   const handlePermanentSave = async () => {
     if (!record) return
     setSavingPermanent(true)
-    const { error } = await supabase.from('voc_records').update({ is_permanent: true }).eq('id', record.id)
-    if (!error) setRecord(prev => prev ? { ...prev, is_permanent: true } : prev)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        alert('로그인이 필요합니다.')
+        setSavingPermanent(false)
+        return
+      }
+      const res = await fetch(`${API_BASE}/permanent`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ voc_id: record.id, s3_key: record.s3_key }),
+      })
+      if (res.ok) {
+        setRecord(prev => prev ? { ...prev, is_permanent: true } : prev)
+        setShowPermanentConfirm(false)
+      } else {
+        const err = await res.json()
+        alert(err.error ?? '영구 저장에 실패했습니다.')
+      }
+    } catch {
+      alert('네트워크 오류가 발생했습니다.')
+    }
     setSavingPermanent(false)
-    setShowPermanentConfirm(false)
-  }
+  }  
 
   const handleSoftDelete = async () => {
     if (!record) return

@@ -3,6 +3,7 @@ bizcall-web-api Lambda
 웹 대시보드 전용 API. Supabase JWT(Bearer 토큰)로 모든 요청을 인증한다.
 엔드포인트:
   GET  /presign?key=<s3_key>   → S3 Pre-signed URL 발급
+  POST /permanent              → 녹음 파일 영구 저장 (S3 복사 + DB 업데이트)
   (Phase 3 추가 예정)
   GET  /prompts                → 프롬프트 템플릿 목록 조회
   PUT  /prompts/<id>           → 프롬프트 템플릿 수정
@@ -18,7 +19,8 @@ from supabase import create_client, Client
 # ── 환경변수 ──────────────────────────────────────────────────────────────
 SUPABASE_URL        = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]   # service_role key
-S3_BUCKET           = os.environ["S3_BUCKET"]
+S3_BUCKET           = os.environ["S3_BUCKET"]             # bizcall-recordings
+S3_PERMANENT_BUCKET = os.environ.get("S3_PERMANENT_BUCKET", "bizcall-permanent")
 AWS_REGION          = "ap-northeast-2"
 PRESIGN_EXPIRES_SEC = 3600  # 1시간
 
@@ -47,12 +49,11 @@ def _get_jwks() -> dict:
 def cors_headers() -> dict:
     """
     Cloudflare Pages 도메인에서 오는 요청을 허용하는 CORS 헤더.
-    실제 운영 도메인이 확정되면 ALLOWED_ORIGIN 환경변수로 교체 가능.
     """
     origin = os.environ.get("ALLOWED_ORIGIN", "*")
     return {
         "Access-Control-Allow-Origin":  origin,
-        "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
     }
 
@@ -93,7 +94,6 @@ def verify_supabase_jwt(event: dict) -> dict | None:
 
     try:
         jwks = _get_jwks()
-        # kid 기반으로 매칭되는 공개키 자동 선택
         public_key = jwt.algorithms.ECAlgorithm.from_jwk(
             json.dumps(jwks["keys"][0])
         )
@@ -116,9 +116,7 @@ def verify_supabase_jwt(event: dict) -> dict | None:
 def handle_presign(event: dict) -> dict:
     """
     GET /presign?key=recordings/xxxxx.m4a
-
     S3 키를 받아 Pre-signed URL(GET, 1시간 유효)을 반환한다.
-    S3 키가 'recordings/' 접두사로 시작하는지 검증해 경로 탈출 공격을 차단한다.
     """
     params = event.get("queryStringParameters") or {}
     s3_key = params.get("key", "").strip()
@@ -126,21 +124,16 @@ def handle_presign(event: dict) -> dict:
     if not s3_key:
         return response(400, {"error": "key 파라미터가 필요합니다"})
 
-    # 경로 탈출 방어: recordings/ 로 시작해야 함
     if not s3_key.startswith("recordings/"):
         return response(403, {"error": "허용되지 않은 S3 경로입니다"})
 
-    # 경로 순회 방어: .. 포함 차단
     if ".." in s3_key:
         return response(403, {"error": "허용되지 않은 S3 경로입니다"})
 
     try:
         presigned_url = s3_client.generate_presigned_url(
             ClientMethod="get_object",
-            Params={
-                "Bucket": S3_BUCKET,
-                "Key":    s3_key,
-            },
+            Params={"Bucket": S3_BUCKET, "Key": s3_key},
             ExpiresIn=PRESIGN_EXPIRES_SEC,
         )
         return response(200, {"url": presigned_url})
@@ -149,24 +142,71 @@ def handle_presign(event: dict) -> dict:
         return response(500, {"error": "URL 발급에 실패했습니다"})
 
 
+# ── /permanent ────────────────────────────────────────────────────────────
+def handle_permanent(event: dict) -> dict:
+    """
+    POST /permanent
+    Body: { "voc_id": "<uuid>", "s3_key": "recordings/xxxxx.m4a" }
+
+    1. bizcall-recordings → bizcall-permanent 로 S3 객체 복사
+    2. voc_records.is_permanent = true 로 DB 업데이트
+    """
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "잘못된 요청 형식입니다"})
+
+    voc_id  = body.get("voc_id", "").strip()
+    s3_key  = body.get("s3_key", "").strip()
+
+    if not voc_id or not s3_key:
+        return response(400, {"error": "voc_id와 s3_key가 필요합니다"})
+
+    # 경로 탈출 방어
+    if not s3_key.startswith("recordings/"):
+        return response(403, {"error": "허용되지 않은 S3 경로입니다"})
+    if ".." in s3_key:
+        return response(403, {"error": "허용되지 않은 S3 경로입니다"})
+
+    # 1) S3 복사: bizcall-recordings → bizcall-permanent (동일 키 유지)
+    try:
+        s3_client.copy_object(
+            CopySource={"Bucket": S3_BUCKET, "Key": s3_key},
+            Bucket=S3_PERMANENT_BUCKET,
+            Key=s3_key,
+        )
+        print(f"S3 복사 완료: {S3_BUCKET}/{s3_key} → {S3_PERMANENT_BUCKET}/{s3_key}")
+    except Exception as e:
+        print(f"S3 복사 오류: {e}")
+        return response(500, {"error": "파일 복사에 실패했습니다"})
+
+    # 2) DB 업데이트
+    try:
+        result = supabase.from_("voc_records").update({"is_permanent": True}).eq("id", voc_id).execute()
+        print(f"DB 업데이트 완료: voc_id={voc_id}")
+    except Exception as e:
+        print(f"DB 업데이트 오류: {e}")
+        return response(500, {"error": "DB 업데이트에 실패했습니다"})
+
+    return response(200, {"success": True, "message": "영구 저장 완료"})
+
+
 # ── Lambda 핸들러 ─────────────────────────────────────────────────────────
 def lambda_handler(event, context):
     print("bizcall-web-api event:", json.dumps(event))
 
-    # ── HTTP API (payload v2) vs REST API (payload v1) 양쪽 호환 ──
-    # HTTP API Gateway (v2): requestContext.http.method / rawPath
-    # REST API Gateway (v1): httpMethod / path
+    # HTTP API (payload v2) vs REST API (payload v1) 양쪽 호환
     request_context = event.get("requestContext", {})
     http_info = request_context.get("http", {})
 
     http_method = (
-        http_info.get("method")          # HTTP API v2
-        or event.get("httpMethod", "")   # REST API v1
+        http_info.get("method")
+        or event.get("httpMethod", "")
     ).upper()
 
     path = (
-        event.get("rawPath")             # HTTP API v2
-        or event.get("path", "")         # REST API v1
+        event.get("rawPath")
+        or event.get("path", "")
     )
 
     # OPTIONS preflight는 인증 없이 즉시 응답
@@ -181,5 +221,8 @@ def lambda_handler(event, context):
     # 라우팅
     if path == "/presign" and http_method == "GET":
         return handle_presign(event)
+
+    if path == "/permanent" and http_method == "POST":
+        return handle_permanent(event)
 
     return response(404, {"error": "존재하지 않는 엔드포인트입니다"})
