@@ -224,6 +224,12 @@ def lambda_handler(event, context):
                 (c["id"] for c in categories if c["name"] == analysis.get("category")),
                 None
             )
+            # AI가 null 반환하거나 매핑 실패 시 "기타" 카테고리로 fallback
+            if category_id is None:
+                category_id = next(
+                    (c["id"] for c in categories if c["name"] == "기타"),
+                    None
+                )
 
             inserted = save_completed_record({
                 "phone_id": phone.get("id"),
