@@ -22,6 +22,7 @@ export default function Layout() {
             { to: '/voc', label: 'VOC 목록' },
             { to: '/phones', label: '업무폰 관리' },
             { to: '/categories', label: '카테고리 관리' },
+            { to: '/prompts', label: '프롬프트 관리' },
           ].map(({ to, label }) => (
             <NavLink
               key={to}

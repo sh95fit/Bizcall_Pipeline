@@ -8,6 +8,7 @@ import VocListPage from './pages/VocListPage'
 import VocDetailPage from './pages/VocDetailPage'
 import PhonesPage from './pages/PhonesPage'
 import CategoriesPage from './pages/CategoriesPage'
+import PromptsPage from './pages/PromptsPage'
 import AuthCallbackPage from './pages/AuthCallbackPage'
 import Layout from './components/Layout'
 
@@ -43,6 +44,7 @@ function App() {
           <Route path="/voc/:id" element={<VocDetailPage />} />
           <Route path="/phones" element={<PhonesPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
+          <Route path="/prompts" element={<PromptsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
