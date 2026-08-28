@@ -24,7 +24,7 @@ PRESIGN_EXPIRES_SEC = 3600  # 1시간
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 s3_client = boto3.client("s3", region_name=AWS_REGION)
-
+ 
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
