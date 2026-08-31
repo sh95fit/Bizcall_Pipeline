@@ -56,10 +56,12 @@ export default function VocListPage() {
     if (statusFilter !== 'all') query = query.eq('processing_status', statusFilter)
     if (sentimentFilter !== 'all') query = query.eq('sentiment', sentimentFilter)
     if (searchText.trim()) query = query.ilike('caller_number', `%${searchText.trim()}%`)
+
+    // [수정] +09:00 offset 명시 → PostgreSQL이 KST 범위로 정확히 해석
     if (dateParam) {
       query = query
-        .gte('call_started_at', `${dateParam}T00:00:00`)
-        .lte('call_started_at', `${dateParam}T23:59:59`)
+        .gte('call_started_at', `${dateParam}T00:00:00+09:00`)
+        .lte('call_started_at', `${dateParam}T23:59:59+09:00`)
     }
 
     const { data, error } = await query
@@ -70,15 +72,21 @@ export default function VocListPage() {
   useEffect(() => { setPage(0) }, [statusFilter, sentimentFilter, searchText, dateParam])
   useEffect(() => { fetchRecords() }, [page, statusFilter, sentimentFilter, searchText, dateParam])
 
-  /* MM/DD HH:mm */
+  // [수정] getHours() 대신 Intl.DateTimeFormat 사용
+  // → 브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 표시
   const formatDate = (str: string | null) => {
     if (!str) return '-'
-    const d   = new Date(str)
-    const mm  = String(d.getMonth() + 1).padStart(2, '0')
-    const dd  = String(d.getDate()).padStart(2, '0')
-    const hh  = String(d.getHours()).padStart(2, '0')
-    const min = String(d.getMinutes()).padStart(2, '0')
-    return `${mm}/${dd} ${hh}:${min}`
+    const d = new Date(str)
+    const parts = new Intl.DateTimeFormat('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d)
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00'
+    return `${get('month')}/${get('day')} ${get('hour')}:${get('minute')}`
   }
 
   return (
@@ -124,16 +132,6 @@ export default function VocListPage() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-xs table-fixed">
             <colgroup>
-              {/*
-                업무폰   : 8%   — 짧은 별칭
-                발신번호 : 11%  — 01000000000 고정 11자리 + 여백
-                방향     : 5%   — 수신/발신 2글자
-                통화시작 : 9%   — MM/DD HH:mm 고정 포맷
-                감성     : 5%   — 2글자
-                상태     : 6%   — 최대 3글자 뱃지
-                요약     : 36%  — 가장 넓게
-                후속조치 : 20%  — memo 텍스트
-              */}
               <col style={{ width: '8%' }} />
               <col style={{ width: '11%' }} />
               <col style={{ width: '5%' }} />
@@ -158,18 +156,12 @@ export default function VocListPage() {
               ) : records.map(r => (
                 <tr key={r.id} onClick={() => navigate(`/voc/${r.id}`)}
                   className="hover:bg-gray-50 cursor-pointer">
-
-                  {/* 업무폰 */}
                   <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
                     {r.phone_name ?? '-'}
                   </td>
-
-                  {/* 발신번호 — 01012345678 고정 11자리, 폰트는 mono */}
                   <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
                     {r.caller_number ?? '-'}
                   </td>
-
-                  {/* 방향 */}
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     {r.call_direction === 'incoming'
                       ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
@@ -177,30 +169,20 @@ export default function VocListPage() {
                       ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
                       : <span className="text-gray-300">-</span>}
                   </td>
-
-                  {/* 통화시작 */}
                   <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
                     {formatDate(r.call_started_at)}
                   </td>
-
-                  {/* 감성 */}
                   <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
                     {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
                   </td>
-
-                  {/* 상태 */}
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     <span className={`px-1.5 py-0.5 rounded-full whitespace-nowrap ${STATUS_COLOR[r.processing_status] ?? 'bg-gray-100 text-gray-500'}`}>
                       {STATUS_LABEL[r.processing_status] ?? r.processing_status}
                     </span>
                   </td>
-
-                  {/* 요약 */}
                   <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
                     {r.summary ?? <span className="text-gray-200">-</span>}
                   </td>
-
-                  {/* 후속 조치 */}
                   <td className="px-3 py-2.5 truncate overflow-hidden whitespace-nowrap">
                     {r.action_required
                       ? <span className="text-orange-500">⚠ {r.action_memo ?? '조치 필요'}</span>

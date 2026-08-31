@@ -14,6 +14,29 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET
 _prompt_cache: dict | None = None
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [추가] timezone 없는 KST 문자열에 +09:00 명시
+# 앱이 S3 메타데이터에 timezone 없이 KST 시각을 저장하기 때문에
+# Supabase(timestamptz)가 UTC로 오해하지 않도록 insert 직전 보정.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def as_kst_isoformat(ts: str | None) -> str | None:
+    """
+    timezone 정보가 없는 KST 문자열에 +09:00을 붙여 반환.
+    이미 timezone이 포함된 문자열이면 그대로 반환.
+
+    예)
+      "2026-08-31T09:57:11"        → "2026-08-31T09:57:11+09:00"
+      "2026-08-31T09:57:11+09:00"  → "2026-08-31T09:57:11+09:00"  (변환 없음)
+      None                         → None
+    """
+    if not ts:
+        return None
+    # 이미 timezone 포함 여부 확인 (Z, +HH:MM, -HH:MM)
+    if ts.endswith("Z") or "+" in ts[10:] or "-" in ts[10:]:
+        return ts
+    return ts + "+09:00"
+
+
 def parse_s3_key(key: str) -> dict:
     try:
         filename = key.split("/")[-1].replace(".m4a", "")
@@ -22,7 +45,8 @@ def parse_s3_key(key: str) -> dict:
         caller_number = parts[-2]
         direction = parts[-3]
         phone_id = "_".join(parts[:-3])
-        call_started_at = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").isoformat()
+        # [수정] isoformat() 결과에 +09:00 즉시 적용
+        call_started_at = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").isoformat() + "+09:00"
         return {
             "phone_id": phone_id,
             "direction": direction,
@@ -52,7 +76,8 @@ def get_call_timing_from_s3(bucket: str, key: str) -> dict:
         duration_str = meta.get("call-duration-sec")
 
         return {
-            "call_ended_at": call_ended_at,
+            # [수정] 앱이 timezone 없는 KST 문자열로 업로드하므로 +09:00 보정
+            "call_ended_at": as_kst_isoformat(call_ended_at),
             "duration_sec": int(duration_str) if duration_str and duration_str.isdigit() else None,
         }
     except Exception as e:
@@ -146,6 +171,10 @@ def save_silent_record(meta: dict, phone: dict, s3_key: str, timing: dict):
         }).execute()
         print("Saved to voc_records: silent_skipped")
     except Exception as e:
+        # [추가] silent도 중복 방어
+        if is_duplicate_insert_error(e):
+            print(f"silent 중복 insert 차단 (23505): {s3_key}")
+            return
         print(f"save_silent_record 오류: {e}")
 
 
@@ -224,7 +253,6 @@ def lambda_handler(event, context):
                 (c["id"] for c in categories if c["name"] == analysis.get("category")),
                 None
             )
-            # AI가 null 반환하거나 매핑 실패 시 "기타" 카테고리로 fallback
             if category_id is None:
                 category_id = next(
                     (c["id"] for c in categories if c["name"] == "기타"),
