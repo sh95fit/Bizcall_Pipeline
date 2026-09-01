@@ -36,6 +36,11 @@ interface VocRecord {
   categories: { name: string } | null
 }
 
+interface Category {
+  id: string
+  name: string
+}
+
 interface ChartDatum {
   date: string
   dateISO: string
@@ -78,8 +83,8 @@ function daysAgoKST(n: number): string {
 function thisWeekMondayKST(): string {
   const kstOffset = 9 * 60 * 60 * 1000
   const kstNow = new Date(new Date().getTime() + kstOffset)
-  const day = kstNow.getUTCDay()         // 0(일)~6(토)
-  const diff = day === 0 ? -6 : 1 - day  // 월요일까지 차이
+  const day = kstNow.getUTCDay()
+  const diff = day === 0 ? -6 : 1 - day
   kstNow.setUTCDate(kstNow.getUTCDate() + diff)
   return kstNow.toISOString().slice(0, 10)
 }
@@ -95,7 +100,6 @@ function thisMonthFirstKST(): string {
 }
 
 /* ─── 포맷 유틸 ─── */
-// Intl.DateTimeFormat 사용 → 브라우저 timezone과 무관하게 KST 기준 표시
 const formatDate = (str: string | null) => {
   if (!str) return '-'
   const d = new Date(str)
@@ -139,7 +143,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
 
         {/* 데스크탑: 2단 그리드 */}
         <div className="hidden sm:grid px-4 py-4 grid-cols-2 gap-4 text-xs">
-          {/* 왼쪽: 통화 정보 + 키워드 + 후속조치 */}
           <div className="space-y-3">
             <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-1.5">
               <p className="text-xs font-semibold text-gray-500 mb-2">통화 정보</p>
@@ -185,7 +188,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
               </div>
             )}
           </div>
-          {/* 오른쪽: 요약 + 스크립트 */}
           <div className="space-y-3">
             <div className="bg-white rounded-lg border border-gray-200 p-3">
               <p className="text-xs font-semibold text-gray-500 mb-2">요약</p>
@@ -265,19 +267,34 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
 export default function DashboardPage() {
   const navigate = useNavigate()
 
-  // [수정] 기본값을 KST 기준 이번 달 1일 ~ 오늘로 초기화
-  const [dateFrom, setDateFrom]         = useState(thisMonthFirstKST)
-  const [dateTo, setDateTo]             = useState(todayKST)
-  const [totalVoc, setTotalVoc]         = useState(0)
-  const [todayVoc, setTodayVoc]         = useState(0)
-  const [activePhones, setActivePhones] = useState(0)
-  const [vocRows, setVocRows]           = useState<VocRow[]>([])
-  const [loading, setLoading]           = useState(true)
+  // 날짜 필터 — KST 기준 이번 달 1일 ~ 오늘로 초기화
+  const [dateFrom, setDateFrom]           = useState(thisMonthFirstKST)
+  const [dateTo, setDateTo]               = useState(todayKST)
 
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
-  const [drillRecords, setDrillRecords] = useState<VocRecord[]>([])
-  const [drillLoading, setDrillLoading] = useState(false)
-  const [expandedId, setExpandedId]     = useState<string | null>(null)
+  // 카테고리 필터 — 'all' = 전체
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [categories, setCategories]         = useState<Category[]>([])
+
+  const [totalVoc, setTotalVoc]           = useState(0)
+  const [todayVoc, setTodayVoc]           = useState(0)
+  const [activePhones, setActivePhones]   = useState(0)
+  const [vocRows, setVocRows]             = useState<VocRow[]>([])
+  const [loading, setLoading]             = useState(true)
+
+  const [selectedDate, setSelectedDate]   = useState<string | null>(null)
+  const [drillRecords, setDrillRecords]   = useState<VocRecord[]>([])
+  const [drillLoading, setDrillLoading]   = useState(false)
+  const [expandedId, setExpandedId]       = useState<string | null>(null)
+
+  // ── 상위 카테고리 목록 로딩 (필터 드롭다운용) ─────────────
+  useEffect(() => {
+    supabase
+      .from('categories')
+      .select('id, name')
+      .is('parent_id', null)
+      .order('sort_order')
+      .then(({ data }) => { if (data) setCategories(data) })
+  }, [])
 
   // ── 드릴다운 초기화 헬퍼 ──────────────────────────────────
   const resetDrill = () => {
@@ -290,48 +307,60 @@ export default function DashboardPage() {
   const applyPreset = (preset: 'today' | 'yesterday' | 'week' | 'month') => {
     resetDrill()
     switch (preset) {
-      case 'today':
-        setDateFrom(todayKST()); setDateTo(todayKST()); break
-      case 'yesterday':
-        setDateFrom(daysAgoKST(1)); setDateTo(daysAgoKST(1)); break
-      case 'week':
-        setDateFrom(thisWeekMondayKST()); setDateTo(todayKST()); break
-      case 'month':
-        setDateFrom(thisMonthFirstKST()); setDateTo(todayKST()); break
+      case 'today':     setDateFrom(todayKST());           setDateTo(todayKST());     break
+      case 'yesterday': setDateFrom(daysAgoKST(1));        setDateTo(daysAgoKST(1)); break
+      case 'week':      setDateFrom(thisWeekMondayKST());  setDateTo(todayKST());     break
+      case 'month':     setDateFrom(thisMonthFirstKST());  setDateTo(todayKST());     break
     }
   }
 
   // ── 현재 선택된 프리셋 감지 (버튼 하이라이트용) ──────────
   const activePreset = (() => {
-    const today = todayKST()
-    const yesterday = daysAgoKST(1)
-    const weekStart = thisWeekMondayKST()
+    const today      = todayKST()
+    const yesterday  = daysAgoKST(1)
+    const weekStart  = thisWeekMondayKST()
     const monthStart = thisMonthFirstKST()
-    if (dateFrom === today     && dateTo === today)     return 'today'
-    if (dateFrom === yesterday && dateTo === yesterday) return 'yesterday'
-    if (dateFrom === weekStart && dateTo === today)     return 'week'
-    if (dateFrom === monthStart && dateTo === today)    return 'month'
-    return null   // 직접 입력 상태
+    if (dateFrom === today      && dateTo === today)      return 'today'
+    if (dateFrom === yesterday  && dateTo === yesterday)  return 'yesterday'
+    if (dateFrom === weekStart  && dateTo === today)      return 'week'
+    if (dateFrom === monthStart && dateTo === today)      return 'month'
+    return null
   })()
 
   /* ── 차트·집계 fetch ── */
   const fetchData = async () => {
     setLoading(true)
-    const fromISO  = `${dateFrom}T00:00:00+09:00`   // [수정] KST offset 명시
+    const fromISO  = `${dateFrom}T00:00:00+09:00`
     const toISO    = `${dateTo}T23:59:59+09:00`
     const todayISO = `${todayKST()}T00:00:00+09:00`
 
+    // 카테고리 필터가 적용된 기본 쿼리 빌더
+    const baseQuery = () => {
+      let q = supabase.from('voc_records')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_deleted', false)
+        .gte('call_started_at', fromISO)
+        .lte('call_started_at', toISO)
+      if (categoryFilter !== 'all') q = q.eq('category_id', categoryFilter)
+      return q
+    }
+
+    // 차트용 rows 쿼리 (카테고리 필터 적용)
+    let chartQuery = supabase.from('voc_records')
+      .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
+      .eq('is_deleted', false)
+      .gte('call_started_at', fromISO)
+      .lte('call_started_at', toISO)
+    if (categoryFilter !== 'all') chartQuery = chartQuery.eq('category_id', categoryFilter)
+
+    // 오늘 VOC, 활성 업무폰은 카테고리 필터 미적용 (대시보드 전체 현황 지표)
     const [
       { count: tv },
       { count: tov },
       { count: ap },
       { data: rows, error: chartError },
     ] = await Promise.all([
-      supabase.from('voc_records')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_deleted', false)
-        .gte('call_started_at', fromISO)
-        .lte('call_started_at', toISO),
+      baseQuery(),
       supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
         .eq('is_deleted', false)
@@ -339,11 +368,7 @@ export default function DashboardPage() {
       supabase.from('phones')
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true),
-      supabase.from('voc_records')
-        .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
-        .eq('is_deleted', false)
-        .gte('call_started_at', fromISO)
-        .lte('call_started_at', toISO),
+      chartQuery,
     ])
 
     if (chartError) console.error('차트 fetch 오류:', chartError)
@@ -354,13 +379,17 @@ export default function DashboardPage() {
     setLoading(false)
   }
 
-  useEffect(() => { fetchData() }, [dateFrom, dateTo])
+  // 날짜 또는 카테고리 필터 변경 시 드릴다운 초기화 후 재조회
+  useEffect(() => {
+    resetDrill()
+    fetchData()
+  }, [dateFrom, dateTo, categoryFilter])
 
-  /* ── 드릴다운 fetch ── */
+  /* ── 드릴다운 fetch (카테고리 필터 적용) ── */
   const fetchDrillDown = async (dateISO: string) => {
     setDrillLoading(true)
     setExpandedId(null)
-    const { data, error } = await supabase
+    let query = supabase
       .from('voc_records')
       .select(
         'id,phone_name,caller_number,call_direction,call_started_at,call_ended_at,' +
@@ -369,9 +398,11 @@ export default function DashboardPage() {
         'category_id,categories!voc_records_category_id_fkey(name)'
       )
       .eq('is_deleted', false)
-      .gte('call_started_at', `${dateISO}T00:00:00+09:00`)   // [수정] KST offset 명시
+      .gte('call_started_at', `${dateISO}T00:00:00+09:00`)
       .lte('call_started_at', `${dateISO}T23:59:59+09:00`)
       .order('call_started_at', { ascending: false })
+    if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter)
+    const { data, error } = await query
     if (!error && data) setDrillRecords(data as unknown as VocRecord[])
     setDrillLoading(false)
   }
@@ -423,7 +454,6 @@ export default function DashboardPage() {
     { label: '활성 업무폰',       value: activePhones, unit: '대', color: 'text-green-600' },
   ]
 
-  // ── 프리셋 버튼 목록 ──────────────────────────────────────
   const PRESETS = [
     { label: '오늘',    preset: 'today'     },
     { label: '어제',    preset: 'yesterday' },
@@ -433,54 +463,68 @@ export default function DashboardPage() {
 
   return (
     <div>
-      {/* ── 헤더 + 날짜 필터 ── */}
-      <div className="flex flex-col gap-3 mb-6">
-        <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
+      {/* ── 헤더 ── */}
+      <h2 className="text-xl font-bold text-gray-800 mb-4">대시보드</h2>
 
-        {/* 날짜 필터 박스 */}
-        <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4 flex flex-col gap-3">
+      {/* ════════════════════════════════════════════════════════
+          필터 박스
+          - 데스크탑(sm↑): 프리셋 버튼 + 날짜 입력 + 카테고리를 한 줄로
+          - 모바일(sm↓):   프리셋 버튼 한 줄 → 날짜+카테고리 두 번째 줄
+          ════════════════════════════════════════════════════════ */}
+      <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center gap-3">
 
-          {/* 프리셋 버튼 행 */}
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map(({ label, preset }) => (
-              <button
-                key={preset}
-                onClick={() => applyPreset(preset)}
-                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                  activePreset === preset
-                    ? 'bg-green-600 text-white border-green-600'
-                    : 'border-gray-300 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {label}
-              </button>
+        {/* 프리셋 버튼 그룹 */}
+        <div className="flex gap-1.5 shrink-0">
+          {PRESETS.map(({ label, preset }) => (
+            <button
+              key={preset}
+              onClick={() => applyPreset(preset)}
+              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors whitespace-nowrap ${
+                activePreset === preset
+                  ? 'bg-green-600 text-white border-green-600'
+                  : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* 구분선 — 데스크탑만 표시 */}
+        <div className="hidden sm:block h-5 w-px bg-gray-200 shrink-0" />
+
+        {/* 날짜 직접 입력 + 카테고리 필터 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={e => { setDateFrom(e.target.value); resetDrill() }}
+            className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+          <span className="text-gray-400 text-sm shrink-0">~</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={e => { setDateTo(e.target.value); resetDrill() }}
+            className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+
+          {/* 구분선 — 데스크탑만 표시 */}
+          <div className="hidden sm:block h-5 w-px bg-gray-200 shrink-0" />
+
+          {/* 카테고리 필터 (상위 카테고리) */}
+          <select
+            value={categoryFilter}
+            onChange={e => setCategoryFilter(e.target.value)}
+            className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          >
+            <option value="all">전체 카테고리</option>
+            {categories.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
             ))}
-          </div>
-
-          {/* 직접 날짜 입력 행 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="date"
-              value={dateFrom}
-              max={dateTo || undefined}
-              onChange={e => { setDateFrom(e.target.value); resetDrill() }}
-              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-            />
-            <span className="text-gray-400 text-sm">~</span>
-            <input
-              type="date"
-              value={dateTo}
-              min={dateFrom || undefined}
-              onChange={e => { setDateTo(e.target.value); resetDrill() }}
-              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-            />
-            {/* 현재 선택 기간 레이블 */}
-            {activePreset === null && dateFrom && dateTo && (
-              <span className="text-xs text-gray-400">
-                직접 입력: {dateFrom === dateTo ? dateFrom : `${dateFrom} ~ ${dateTo}`}
-              </span>
-            )}
-          </div>
+          </select>
         </div>
       </div>
 
@@ -550,6 +594,12 @@ export default function DashboardPage() {
                       {drillRecords.length}건
                     </span>
                   )}
+                  {/* 카테고리 필터 활성 시 표시 */}
+                  {categoryFilter !== 'all' && (
+                    <span className="text-xs text-gray-400">
+                      · {categories.find(c => c.id === categoryFilter)?.name} 필터 적용 중
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -605,12 +655,8 @@ export default function DashboardPage() {
                               <td className="px-2 py-2.5 text-center text-gray-300">
                                 <span className={`inline-block transition-transform duration-200 ${expandedId === r.id ? 'rotate-90' : ''}`}>▶</span>
                               </td>
-                              <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
-                                {r.phone_name ?? '-'}
-                              </td>
-                              <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
-                                {r.caller_number ?? '-'}
-                              </td>
+                              <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">{r.phone_name ?? '-'}</td>
+                              <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">{r.caller_number ?? '-'}</td>
                               <td className="px-3 py-2.5 whitespace-nowrap">
                                 {r.call_direction === 'incoming'
                                   ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
@@ -618,9 +664,7 @@ export default function DashboardPage() {
                                   ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
                                   : <span className="text-gray-300">-</span>}
                               </td>
-                              <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
-                                {formatDate(r.call_started_at)}
-                              </td>
+                              <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{formatDate(r.call_started_at)}</td>
                               <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
                                 {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
                               </td>
