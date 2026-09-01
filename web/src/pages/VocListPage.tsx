@@ -13,17 +13,15 @@ interface VocRecord {
   summary: string | null
   action_required: boolean
   action_memo: string | null
+  category_id: string | null
+  categories: { name: string } | null   // 상위 카테고리 조인
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: '대기', processing: '처리중', completed: '완료', failed: '실패',
+interface Category {
+  id: string
+  name: string
 }
-const STATUS_COLOR: Record<string, string> = {
-  pending:    'bg-yellow-100 text-yellow-700',
-  processing: 'bg-blue-100 text-blue-700',
-  completed:  'bg-green-100 text-green-700',
-  failed:     'bg-red-100 text-red-600',
-}
+
 const SENTIMENT_LABEL: Record<string, string> = {
   positive: '긍정', neutral: '중립', negative: '부정',
 }
@@ -36,28 +34,42 @@ export default function VocListPage() {
   const [searchParams] = useSearchParams()
   const dateParam = searchParams.get('date')
 
-  const [records, setRecords]           = useState<VocRecord[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [records, setRecords]               = useState<VocRecord[]>([])
+  const [categories, setCategories]         = useState<Category[]>([])
+  const [loading, setLoading]               = useState(true)
+  const [categoryFilter, setCategoryFilter] = useState('all')   // 상태 필터 → 카테고리 필터
   const [sentimentFilter, setSentimentFilter] = useState('all')
-  const [searchText, setSearchText]     = useState('')
-  const [page, setPage]                 = useState(0)
+  const [searchText, setSearchText]         = useState('')
+  const [page, setPage]                     = useState(0)
   const PAGE_SIZE = 20
+
+  // 상위 카테고리 목록 로딩 (필터 드롭다운용)
+  useEffect(() => {
+    supabase
+      .from('categories')
+      .select('id, name')
+      .is('parent_id', null)    // 상위 카테고리만
+      .order('sort_order')
+      .then(({ data }) => { if (data) setCategories(data) })
+  }, [])
 
   const fetchRecords = async () => {
     setLoading(true)
     let query = supabase
       .from('voc_records')
-      .select('id,phone_name,caller_number,call_direction,call_started_at,processing_status,sentiment,summary,action_required,action_memo')
+      .select(
+        'id,phone_name,caller_number,call_direction,call_started_at,' +
+        'processing_status,sentiment,summary,action_required,action_memo,' +
+        'category_id,categories!voc_records_category_id_fkey(name)'
+      )
       .eq('is_deleted', false)
       .order('call_started_at', { ascending: false })
       .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
 
-    if (statusFilter !== 'all') query = query.eq('processing_status', statusFilter)
+    if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter)
     if (sentimentFilter !== 'all') query = query.eq('sentiment', sentimentFilter)
     if (searchText.trim()) query = query.ilike('caller_number', `%${searchText.trim()}%`)
 
-    // [수정] +09:00 offset 명시 → PostgreSQL이 KST 범위로 정확히 해석
     if (dateParam) {
       query = query
         .gte('call_started_at', `${dateParam}T00:00:00+09:00`)
@@ -65,24 +77,20 @@ export default function VocListPage() {
     }
 
     const { data, error } = await query
-    if (!error && data) setRecords(data)
+    if (!error && data) setRecords(data as unknown as VocRecord[])
     setLoading(false)
   }
 
-  useEffect(() => { setPage(0) }, [statusFilter, sentimentFilter, searchText, dateParam])
-  useEffect(() => { fetchRecords() }, [page, statusFilter, sentimentFilter, searchText, dateParam])
+  useEffect(() => { setPage(0) }, [categoryFilter, sentimentFilter, searchText, dateParam])
+  useEffect(() => { fetchRecords() }, [page, categoryFilter, sentimentFilter, searchText, dateParam])
 
-  // [수정] getHours() 대신 Intl.DateTimeFormat 사용
-  // → 브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 표시
   const formatDate = (str: string | null) => {
     if (!str) return '-'
     const d = new Date(str)
     const parts = new Intl.DateTimeFormat('ko-KR', {
       timeZone: 'Asia/Seoul',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
+      month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
       hour12: false,
     }).formatToParts(d)
     const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00'
@@ -108,16 +116,23 @@ export default function VocListPage() {
           value={searchText} onChange={e => setSearchText(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-green-500"
         />
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500">
-          <option value="all">전체 상태</option>
-          <option value="pending">대기</option>
-          <option value="processing">처리중</option>
-          <option value="completed">완료</option>
-          <option value="failed">실패</option>
+        {/* 카테고리 필터 (상위 카테고리) */}
+        <select
+          value={categoryFilter}
+          onChange={e => setCategoryFilter(e.target.value)}
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
+          <option value="all">전체 카테고리</option>
+          {categories.map(c => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
         </select>
-        <select value={sentimentFilter} onChange={e => setSentimentFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500">
+        {/* 감성 필터 */}
+        <select
+          value={sentimentFilter}
+          onChange={e => setSentimentFilter(e.target.value)}
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
           <option value="all">전체 감성</option>
           <option value="positive">긍정</option>
           <option value="neutral">중립</option>
@@ -132,18 +147,18 @@ export default function VocListPage() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-xs table-fixed">
             <colgroup>
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '6%' }} />
-              <col style={{ width: '36%' }} />
-              <col style={{ width: '20%' }} />
+              <col style={{ width: '8%' }} />   {/* 업무폰 */}
+              <col style={{ width: '11%' }} />  {/* 발신번호 */}
+              <col style={{ width: '5%' }} />   {/* 방향 */}
+              <col style={{ width: '9%' }} />   {/* 통화시작 */}
+              <col style={{ width: '5%' }} />   {/* 감성 */}
+              <col style={{ width: '8%' }} />   {/* 카테고리 */}
+              <col style={{ width: '34%' }} />  {/* 요약 */}
+              <col style={{ width: '20%' }} />  {/* 후속 조치 */}
             </colgroup>
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                {['업무폰', '발신번호', '방향', '통화시작', '감성', '상태', '요약', '후속 조치'].map(h => (
+                {['업무폰', '발신번호', '방향', '통화시작', '감성', '카테고리', '요약', '후속 조치'].map(h => (
                   <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -175,10 +190,13 @@ export default function VocListPage() {
                   <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
                     {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
                   </td>
+                  {/* 카테고리 컬럼 (상위 카테고리) */}
                   <td className="px-3 py-2.5 whitespace-nowrap">
-                    <span className={`px-1.5 py-0.5 rounded-full whitespace-nowrap ${STATUS_COLOR[r.processing_status] ?? 'bg-gray-100 text-gray-500'}`}>
-                      {STATUS_LABEL[r.processing_status] ?? r.processing_status}
-                    </span>
+                    {r.categories?.name
+                      ? <span className="px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-xs">
+                          {r.categories.name}
+                        </span>
+                      : <span className="text-gray-300">-</span>}
                   </td>
                   <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
                     {r.summary ?? <span className="text-gray-200">-</span>}
