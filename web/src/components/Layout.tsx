@@ -3,16 +3,15 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 const NAV_ITEMS = [
-  { to: '/',           label: '대시보드',     icon: '📊' },
-  { to: '/voc',        label: 'VOC 목록',     icon: '📋' },
-  { to: '/phones',     label: '업무폰',       icon: '📱' },
-  { to: '/categories', label: '카테고리',     icon: '🗂️' },
-  { to: '/prompts',    label: '프롬프트',     icon: '🤖' },
+  { to: '/',           label: '대시보드',  icon: '📊' },
+  { to: '/voc',        label: 'VOC 목록',  icon: '📋' },
+  { to: '/phones',     label: '업무폰',    icon: '📱' },
+  { to: '/categories', label: '카테고리',  icon: '🗂️' },
+  { to: '/prompts',    label: '프롬프트',  icon: '🤖' },
 ]
 
 export default function Layout() {
   const navigate = useNavigate()
-  // 모바일 사이드바 드로어 열림 여부
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -63,7 +62,6 @@ export default function Layout() {
           ════════════════════════════════════════ */}
       <div className="sm:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-gray-200 flex items-center justify-between px-4 h-14">
         <h1 className="text-base font-bold text-green-800">BizCall Admin</h1>
-        {/* 햄버거 버튼 → 드로어 열기 */}
         <button
           onClick={() => setDrawerOpen(true)}
           className="p-2 text-gray-500 hover:text-gray-800"
@@ -131,10 +129,10 @@ export default function Layout() {
 
       {/* ════════════════════════════════════════
           메인 콘텐츠
-          - 모바일: 상단 헤더(h-14) 높이만큼 pt 확보
+          - 모바일: 헤더(h-14 = 56px) + 여백(16px) → pt-20
           - 데스크탑: 기존과 동일하게 p-8
           ════════════════════════════════════════ */}
-      <main className="flex-1 overflow-auto pt-14 sm:pt-0 p-4 sm:p-8">
+      <main className="flex-1 overflow-auto p-4 pt-20 sm:p-8">
         <Outlet />
       </main>
 
