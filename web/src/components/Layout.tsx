@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 const NAV_ITEMS = [
@@ -27,7 +27,12 @@ export default function Layout() {
           ════════════════════════════════════════ */}
       <aside className="hidden sm:flex w-56 bg-white border-r border-gray-200 flex-col shrink-0">
         <div className="p-5 border-b border-gray-200">
-          <h1 className="text-lg font-bold text-green-800">BizCall Admin</h1>
+          {/* 로고 클릭 → 대시보드 이동 */}
+          <Link to="/" className="block">
+            <h1 className="text-lg font-bold text-green-800 hover:text-green-600 transition-colors">
+              BizCall Admin
+            </h1>
+          </Link>
         </div>
         <nav className="flex-1 p-4 space-y-1">
           {NAV_ITEMS.map(({ to, label }) => (
@@ -61,7 +66,10 @@ export default function Layout() {
           모바일 상단 헤더 (sm 미만에서만 표시)
           ════════════════════════════════════════ */}
       <div className="sm:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-gray-200 flex items-center justify-between px-4 h-14">
-        <h1 className="text-base font-bold text-green-800">BizCall Admin</h1>
+        {/* 로고 클릭 → 대시보드 이동 */}
+        <Link to="/" className="block">
+          <h1 className="text-base font-bold text-green-800">BizCall Admin</h1>
+        </Link>
         <button
           onClick={() => setDrawerOpen(true)}
           className="p-2 text-gray-500 hover:text-gray-800"
@@ -86,7 +94,9 @@ export default function Layout() {
           {/* 드로어 본체 */}
           <div className="sm:hidden fixed top-0 right-0 h-full w-64 bg-white z-50 flex flex-col shadow-xl">
             <div className="flex items-center justify-between p-5 border-b border-gray-200">
-              <h1 className="text-base font-bold text-green-800">BizCall Admin</h1>
+              <Link to="/" onClick={() => setDrawerOpen(false)}>
+                <h1 className="text-base font-bold text-green-800">BizCall Admin</h1>
+              </Link>
               <button
                 onClick={() => setDrawerOpen(false)}
                 className="text-gray-400 hover:text-gray-600 text-xl leading-none"

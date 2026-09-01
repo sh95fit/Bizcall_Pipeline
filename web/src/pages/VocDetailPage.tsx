@@ -24,6 +24,7 @@ interface VocDetail {
   category_id: string | null
   sub_category_id: string | null
   s3_key: string
+  memo: string | null   // 운영자 특이사항 메모
 }
 
 interface Category {
@@ -63,13 +64,13 @@ export default function VocDetailPage() {
   const navigate = useNavigate()
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  const [record, setRecord] = useState<VocDetail | null>(null)
+  const [record, setRecord]   = useState<VocDetail | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [audioUrl, setAudioUrl]       = useState<string | null>(null)
   const [audioLoading, setAudioLoading] = useState(false)
-  const [audioError, setAudioError] = useState<string | null>(null)
+  const [audioError, setAudioError]   = useState<string | null>(null)
 
   const [showPermanentConfirm, setShowPermanentConfirm] = useState(false)
   const [savingPermanent, setSavingPermanent] = useState(false)
@@ -77,6 +78,11 @@ export default function VocDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteReason, setDeleteReason] = useState('')
   const [deleting, setDeleting] = useState(false)
+
+  // ── 메모 편집 상태 ──────────────────────────────────────────
+  const [memoEditing, setMemoEditing] = useState(false)   // 편집 모드 여부
+  const [memoText, setMemoText]       = useState('')       // textarea 입력값
+  const [memoSaving, setMemoSaving]   = useState(false)   // 저장 중 여부
 
   useEffect(() => {
     const fetchData = async () => {
@@ -162,6 +168,42 @@ export default function VocDetailPage() {
       .eq('id', record.id)
     if (!error) navigate('/voc')
     setDeleting(false)
+  }
+
+  // ── 메모 저장 ────────────────────────────────────────────────
+  // 빈 문자열로 저장하면 null 처리 → "메모 없음" 상태로 복귀
+  const handleMemoSave = async () => {
+    if (!record) return
+    setMemoSaving(true)
+    const value = memoText.trim() || null
+    const { error } = await supabase
+      .from('voc_records')
+      .update({ memo: value })
+      .eq('id', record.id)
+    if (!error) {
+      setRecord(prev => prev ? { ...prev, memo: value } : prev)
+    }
+    setMemoEditing(false)
+    setMemoSaving(false)
+  }
+
+  // ── 메모 삭제 ─────────────────────────────────────────────
+  const handleMemoDelete = async () => {
+    if (!record || !window.confirm('메모를 삭제할까요?')) return
+    const { error } = await supabase
+      .from('voc_records')
+      .update({ memo: null })
+      .eq('id', record.id)
+    if (!error) {
+      setRecord(prev => prev ? { ...prev, memo: null } : prev)
+      setMemoText('')
+    }
+  }
+
+  // ── 편집 모드 진입 ────────────────────────────────────────
+  const startEditMemo = () => {
+    setMemoText(record?.memo ?? '')
+    setMemoEditing(true)
   }
 
   const formatDate = (str: string | null) => {
@@ -315,6 +357,73 @@ export default function VocDetailPage() {
               )}
             </div>
           )}
+
+          {/* ── 운영자 메모 ────────────────────────────────────────
+              - 메모 없음: "메모 추가" 버튼 표시
+              - 메모 있음: 내용 표시 + 수정 / 삭제 버튼
+              - 편집 모드: textarea + 저장 / 취소 버튼
+              ──────────────────────────────────────────────────── */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">운영자 메모</h3>
+
+            {memoEditing ? (
+              // 편집 모드
+              <div className="flex flex-col gap-3">
+                <textarea
+                  autoFocus
+                  value={memoText}
+                  onChange={e => setMemoText(e.target.value)}
+                  rows={4}
+                  placeholder="특이사항 메모를 입력하세요..."
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleMemoSave}
+                    disabled={memoSaving}
+                    className="flex-1 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium"
+                  >
+                    {memoSaving ? '저장 중...' : '저장'}
+                  </button>
+                  <button
+                    onClick={() => setMemoEditing(false)}
+                    className="flex-1 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            ) : record.memo ? (
+              // 메모 있음: 내용 표시
+              <div>
+                <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap mb-3">
+                  {record.memo}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={startEditMemo}
+                    className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-500"
+                  >
+                    ✏️ 수정
+                  </button>
+                  <button
+                    onClick={handleMemoDelete}
+                    className="px-3 py-1.5 text-xs border border-red-200 rounded-lg hover:bg-red-50 text-red-400"
+                  >
+                    🗑️ 삭제
+                  </button>
+                </div>
+              </div>
+            ) : (
+              // 메모 없음: 추가 버튼
+              <button
+                onClick={startEditMemo}
+                className="w-full py-3 text-sm text-gray-400 hover:text-gray-600 border border-dashed border-gray-200 rounded-lg hover:border-gray-300 transition-colors"
+              >
+                + 메모 추가
+              </button>
+            )}
+          </div>
 
           {/* 소프트 삭제 */}
           {!record.is_deleted && (
