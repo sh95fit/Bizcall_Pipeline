@@ -32,8 +32,8 @@ interface VocRecord {
   action_memo: string | null
   is_permanent: boolean
   s3_key: string | null
-  category_id: string | null                  // 추가
-  categories: { name: string } | null         // 추가
+  category_id: string | null
+  categories: { name: string } | null
 }
 
 interface ChartDatum {
@@ -45,7 +45,6 @@ interface ChartDatum {
 type BarClickData = BarRectangleItem & ChartDatum
 
 /* ─── 상수 ─── */
-// 차트 막대 색상 — categoryColors.ts의 HSL 해시와 동일 hue 계산
 const CHART_COLORS = [
   '#8b5cf6', '#3b82f6', '#f43f5e', '#f59e0b',
   '#14b8a6', '#ec4899', '#06b6d4', '#84cc16',
@@ -57,17 +56,46 @@ const SENTIMENT_COLOR: Record<string, string> = {
   positive: 'text-green-600', neutral: 'text-gray-400', negative: 'text-red-500',
 }
 
-const getDefaultRange = () => {
-  const now  = new Date()
-  const from = new Date(now.getFullYear(), now.getMonth(), 1)
-  return {
-    from: from.toISOString().slice(0, 10),
-    to:   now.toISOString().slice(0, 10),
-  }
+/* ─── KST 날짜 헬퍼 (VocListPage와 동일한 로직) ─────────────────
+   브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 계산
+   ─────────────────────────────────────────────────────────────── */
+function todayKST(): string {
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date()).replace(/\. /g, '-').replace('.', '')
 }
 
-// [수정] getHours() 대신 Intl.DateTimeFormat 사용
-// → 브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 표시
+function daysAgoKST(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d).replace(/\. /g, '-').replace('.', '')
+}
+
+function thisWeekMondayKST(): string {
+  const kstOffset = 9 * 60 * 60 * 1000
+  const kstNow = new Date(new Date().getTime() + kstOffset)
+  const day = kstNow.getUTCDay()         // 0(일)~6(토)
+  const diff = day === 0 ? -6 : 1 - day  // 월요일까지 차이
+  kstNow.setUTCDate(kstNow.getUTCDate() + diff)
+  return kstNow.toISOString().slice(0, 10)
+}
+
+function thisMonthFirstKST(): string {
+  const parts = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit',
+  }).formatToParts(new Date())
+  const y = parts.find(p => p.type === 'year')?.value ?? ''
+  const m = parts.find(p => p.type === 'month')?.value ?? ''
+  return `${y}-${m}-01`
+}
+
+/* ─── 포맷 유틸 ─── */
+// Intl.DateTimeFormat 사용 → 브라우저 timezone과 무관하게 KST 기준 표시
 const formatDate = (str: string | null) => {
   if (!str) return '-'
   const d = new Date(str)
@@ -111,10 +139,8 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
 
         {/* 데스크탑: 2단 그리드 */}
         <div className="hidden sm:grid px-4 py-4 grid-cols-2 gap-4 text-xs">
-
           {/* 왼쪽: 통화 정보 + 키워드 + 후속조치 */}
           <div className="space-y-3">
-            {/* 통화 기본 정보 */}
             <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-1.5">
               <p className="text-xs font-semibold text-gray-500 mb-2">통화 정보</p>
               <div className="flex justify-between">
@@ -131,7 +157,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
                   {record.sentiment ? (SENTIMENT_LABEL[record.sentiment] ?? record.sentiment) : '-'}
                 </span>
               </div>
-              {/* 카테고리 (상위) */}
               <div className="flex justify-between items-center">
                 <span className="text-gray-400">카테고리</span>
                 <CategoryBadge id={record.category_id} name={record.categories?.name ?? null} />
@@ -143,8 +168,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
                 </div>
               )}
             </div>
-
-            {/* 키워드 */}
             {record.keywords && record.keywords.length > 0 && (
               <div className="bg-white rounded-lg border border-gray-200 p-3">
                 <p className="text-xs font-semibold text-gray-500 mb-2">키워드</p>
@@ -155,8 +178,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
                 </div>
               </div>
             )}
-
-            {/* 후속 조치 */}
             {record.action_required && (
               <div className="bg-orange-50 rounded-lg border border-orange-100 p-3">
                 <p className="text-xs font-semibold text-orange-600 mb-1">⚠ 후속 조치 필요</p>
@@ -164,7 +185,6 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
               </div>
             )}
           </div>
-
           {/* 오른쪽: 요약 + 스크립트 */}
           <div className="space-y-3">
             <div className="bg-white rounded-lg border border-gray-200 p-3">
@@ -244,10 +264,10 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
 /* ─── 메인 컴포넌트 ─── */
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const def = getDefaultRange()
 
-  const [dateFrom, setDateFrom]         = useState(def.from)
-  const [dateTo, setDateTo]             = useState(def.to)
+  // [수정] 기본값을 KST 기준 이번 달 1일 ~ 오늘로 초기화
+  const [dateFrom, setDateFrom]         = useState(thisMonthFirstKST)
+  const [dateTo, setDateTo]             = useState(todayKST)
   const [totalVoc, setTotalVoc]         = useState(0)
   const [todayVoc, setTodayVoc]         = useState(0)
   const [activePhones, setActivePhones] = useState(0)
@@ -259,13 +279,47 @@ export default function DashboardPage() {
   const [drillLoading, setDrillLoading] = useState(false)
   const [expandedId, setExpandedId]     = useState<string | null>(null)
 
+  // ── 드릴다운 초기화 헬퍼 ──────────────────────────────────
+  const resetDrill = () => {
+    setSelectedDate(null)
+    setDrillRecords([])
+    setExpandedId(null)
+  }
+
+  // ── 빠른 날짜 선택 프리셋 ─────────────────────────────────
+  const applyPreset = (preset: 'today' | 'yesterday' | 'week' | 'month') => {
+    resetDrill()
+    switch (preset) {
+      case 'today':
+        setDateFrom(todayKST()); setDateTo(todayKST()); break
+      case 'yesterday':
+        setDateFrom(daysAgoKST(1)); setDateTo(daysAgoKST(1)); break
+      case 'week':
+        setDateFrom(thisWeekMondayKST()); setDateTo(todayKST()); break
+      case 'month':
+        setDateFrom(thisMonthFirstKST()); setDateTo(todayKST()); break
+    }
+  }
+
+  // ── 현재 선택된 프리셋 감지 (버튼 하이라이트용) ──────────
+  const activePreset = (() => {
+    const today = todayKST()
+    const yesterday = daysAgoKST(1)
+    const weekStart = thisWeekMondayKST()
+    const monthStart = thisMonthFirstKST()
+    if (dateFrom === today     && dateTo === today)     return 'today'
+    if (dateFrom === yesterday && dateTo === yesterday) return 'yesterday'
+    if (dateFrom === weekStart && dateTo === today)     return 'week'
+    if (dateFrom === monthStart && dateTo === today)    return 'month'
+    return null   // 직접 입력 상태
+  })()
+
   /* ── 차트·집계 fetch ── */
   const fetchData = async () => {
     setLoading(true)
-    const fromISO  = `${dateFrom} 00:00:00`
-    const toISO    = `${dateTo} 23:59:59`
-    const todayStr = new Date().toISOString().slice(0, 10)
-    const todayISO = `${todayStr} 00:00:00`
+    const fromISO  = `${dateFrom}T00:00:00+09:00`   // [수정] KST offset 명시
+    const toISO    = `${dateTo}T23:59:59+09:00`
+    const todayISO = `${todayKST()}T00:00:00+09:00`
 
     const [
       { count: tv },
@@ -302,7 +356,7 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchData() }, [dateFrom, dateTo])
 
-  /* ── 드릴다운 fetch: categories 조인 추가 ── */
+  /* ── 드릴다운 fetch ── */
   const fetchDrillDown = async (dateISO: string) => {
     setDrillLoading(true)
     setExpandedId(null)
@@ -312,11 +366,11 @@ export default function DashboardPage() {
         'id,phone_name,caller_number,call_direction,call_started_at,call_ended_at,' +
         'duration_sec,processing_status,sentiment,summary,transcript,keywords,' +
         'action_required,action_memo,is_permanent,s3_key,' +
-        'category_id,categories!voc_records_category_id_fkey(name)' // 추가
+        'category_id,categories!voc_records_category_id_fkey(name)'
       )
       .eq('is_deleted', false)
-      .gte('call_started_at', `${dateISO} 00:00:00`)
-      .lte('call_started_at', `${dateISO} 23:59:59`)
+      .gte('call_started_at', `${dateISO}T00:00:00+09:00`)   // [수정] KST offset 명시
+      .lte('call_started_at', `${dateISO}T23:59:59+09:00`)
       .order('call_started_at', { ascending: false })
     if (!error && data) setDrillRecords(data as unknown as VocRecord[])
     setDrillLoading(false)
@@ -327,9 +381,7 @@ export default function DashboardPage() {
     const d = data as unknown as BarClickData
     if (!d?.dateISO) return
     if (selectedDate === d.dateISO) {
-      setSelectedDate(null)
-      setDrillRecords([])
-      setExpandedId(null)
+      resetDrill()
     } else {
       setSelectedDate(d.dateISO)
       fetchDrillDown(d.dateISO)
@@ -371,21 +423,64 @@ export default function DashboardPage() {
     { label: '활성 업무폰',       value: activePhones, unit: '대', color: 'text-green-600' },
   ]
 
+  // ── 프리셋 버튼 목록 ──────────────────────────────────────
+  const PRESETS = [
+    { label: '오늘',    preset: 'today'     },
+    { label: '어제',    preset: 'yesterday' },
+    { label: '이번 주', preset: 'week'      },
+    { label: '이번 달', preset: 'month'     },
+  ] as const
+
   return (
     <div>
-      {/* ── 헤더 — 모바일: 세로 스택 / 데스크탑: 가로 정렬 ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+      {/* ── 헤더 + 날짜 필터 ── */}
+      <div className="flex flex-col gap-3 mb-6">
         <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
-        <div className="flex items-center gap-2 text-sm">
-          <input type="date" value={dateFrom}
-            onChange={e => { setDateFrom(e.target.value); setSelectedDate(null); setExpandedId(null) }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-          <span className="text-gray-400">~</span>
-          <input type="date" value={dateTo}
-            onChange={e => { setDateTo(e.target.value); setSelectedDate(null); setExpandedId(null) }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
+
+        {/* 날짜 필터 박스 */}
+        <div className="bg-white rounded-xl border border-gray-200 p-3 sm:p-4 flex flex-col gap-3">
+
+          {/* 프리셋 버튼 행 */}
+          <div className="flex flex-wrap gap-1.5">
+            {PRESETS.map(({ label, preset }) => (
+              <button
+                key={preset}
+                onClick={() => applyPreset(preset)}
+                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                  activePreset === preset
+                    ? 'bg-green-600 text-white border-green-600'
+                    : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* 직접 날짜 입력 행 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={e => { setDateFrom(e.target.value); resetDrill() }}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+            <span className="text-gray-400 text-sm">~</span>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={e => { setDateTo(e.target.value); resetDrill() }}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+            {/* 현재 선택 기간 레이블 */}
+            {activePreset === null && dateFrom && dateTo && (
+              <span className="text-xs text-gray-400">
+                직접 입력: {dateFrom === dateTo ? dateFrom : `${dateFrom} ~ ${dateTo}`}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -393,7 +488,7 @@ export default function DashboardPage() {
         <p className="text-gray-400 text-sm">불러오는 중...</p>
       ) : (
         <>
-          {/* ── 요약 카드 — 모바일 1열, 데스크탑 3열 ── */}
+          {/* ── 요약 카드 ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
             {cards.map(({ label, value, unit, color }) => (
               <div key={label} className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5">
@@ -429,7 +524,13 @@ export default function DashboardPage() {
                   <Tooltip formatter={(value, name) => [value, name]} contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   {categoryKeys.map((cat, i) => (
-                    <Bar key={cat} dataKey={cat} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} onClick={handleBarClick} />
+                    <Bar
+                      key={cat}
+                      dataKey={cat}
+                      stackId="a"
+                      fill={CHART_COLORS[i % CHART_COLORS.length]}
+                      onClick={handleBarClick}
+                    />
                   ))}
                 </BarChart>
               </ResponsiveContainer>
@@ -458,7 +559,7 @@ export default function DashboardPage() {
                     전체 페이지로 보기 →
                   </button>
                   <button
-                    onClick={() => { setSelectedDate(null); setDrillRecords([]); setExpandedId(null) }}
+                    onClick={resetDrill}
                     className="text-gray-400 hover:text-gray-600 text-lg leading-none"
                   >
                     ✕
@@ -476,14 +577,14 @@ export default function DashboardPage() {
                   <div className="hidden sm:block">
                     <table className="w-full text-xs table-fixed">
                       <colgroup>
-                        <col style={{ width: '2%' }} />   {/* 토글 */}
-                        <col style={{ width: '8%' }} />   {/* 업무폰 */}
-                        <col style={{ width: '11%' }} />  {/* 발신번호 */}
-                        <col style={{ width: '5%' }} />   {/* 방향 */}
-                        <col style={{ width: '9%' }} />   {/* 통화시작 */}
-                        <col style={{ width: '5%' }} />   {/* 감성 */}
-                        <col style={{ width: '8%' }} />   {/* 카테고리 */}
-                        <col style={{ width: '52%' }} />  {/* 요약 */}
+                        <col style={{ width: '2%' }} />
+                        <col style={{ width: '8%' }} />
+                        <col style={{ width: '11%' }} />
+                        <col style={{ width: '5%' }} />
+                        <col style={{ width: '9%' }} />
+                        <col style={{ width: '5%' }} />
+                        <col style={{ width: '8%' }} />
+                        <col style={{ width: '52%' }} />
                       </colgroup>
                       <thead className="bg-gray-50 border-b border-gray-200">
                         <tr>
@@ -523,7 +624,6 @@ export default function DashboardPage() {
                               <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
                                 {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
                               </td>
-                              {/* 카테고리 컬럼 (상위 카테고리) — HSL 해시 색상 자동 적용 */}
                               <td className="px-3 py-2.5 whitespace-nowrap">
                                 <CategoryBadge id={r.category_id} name={r.categories?.name ?? null} />
                               </td>
@@ -531,8 +631,6 @@ export default function DashboardPage() {
                                 {r.summary ?? <span className="text-gray-200">-</span>}
                               </td>
                             </tr>
-
-                            {/* 아코디언 상세 패널 */}
                             {expandedId === r.id && (
                               <DetailPanel
                                 key={`detail-${r.id}`}
