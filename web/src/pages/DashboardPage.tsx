@@ -333,6 +333,7 @@ export default function DashboardPage() {
     const fromISO  = `${dateFrom}T00:00:00+09:00`
     const toISO    = `${dateTo}T23:59:59+09:00`
     const todayISO = `${todayKST()}T00:00:00+09:00`
+    const todayEndISO = `${todayKST()}T23:59:59+09:00`  // ← 추가
 
     // 카테고리 필터가 적용된 기본 쿼리 빌더
     const baseQuery = () => {
@@ -353,7 +354,18 @@ export default function DashboardPage() {
       .lte('call_started_at', toISO)
     if (categoryFilter !== 'all') chartQuery = chartQuery.eq('category_id', categoryFilter)
 
-    // 오늘 VOC, 활성 업무폰은 카테고리 필터 미적용 (대시보드 전체 현황 지표)
+    // 오늘 VOC 카테고리 필터 적용
+    // 활성 업무폰만 카테고리와 무관한 전체 현황 지표로 유지
+    const todayQuery = () => {
+      let q = supabase.from('voc_records')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_deleted', false)
+        .gte('call_started_at', todayISO)
+        .lte('call_started_at', todayEndISO)
+      if (categoryFilter !== 'all') q = q.eq('category_id', categoryFilter)
+      return q
+    }
+
     const [
       { count: tv },
       { count: tov },
@@ -361,10 +373,7 @@ export default function DashboardPage() {
       { data: rows, error: chartError },
     ] = await Promise.all([
       baseQuery(),
-      supabase.from('voc_records')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_deleted', false)
-        .gte('call_started_at', todayISO),
+      todayQuery(),   // ← 수정
       supabase.from('phones')
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true),
@@ -448,11 +457,30 @@ export default function DashboardPage() {
     return { chartData: data, categoryKeys: keys }
   }, [vocRows])
 
-  const cards = [
-    { label: '기간 내 전체 VOC', value: totalVoc,     unit: '건', color: 'text-gray-800' },
-    { label: '오늘 VOC',         value: todayVoc,     unit: '건', color: 'text-blue-600' },
-    { label: '활성 업무폰',       value: activePhones, unit: '대', color: 'text-green-600' },
-  ]
+  const activeCatName = categoryFilter !== 'all'
+    ? categories.find(c => c.id === categoryFilter)?.name
+    : null
+
+    const cards = [
+      {
+        label: activeCatName ? `기간 내 VOC (${activeCatName})` : '기간 내 전체 VOC',
+        value: totalVoc,
+        unit: '건',
+        color: 'text-gray-800',
+      },
+      {
+        label: activeCatName ? `오늘 VOC (${activeCatName})` : '오늘 VOC',
+        value: todayVoc,
+        unit: '건',
+        color: 'text-blue-600',
+      },
+      {
+        label: '활성 업무폰',
+        value: activePhones,
+        unit: '대',
+        color: 'text-green-600',
+      },
+    ]
 
   const PRESETS = [
     { label: '오늘',    preset: 'today'     },
