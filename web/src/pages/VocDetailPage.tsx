@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { getCategoryStyle } from '../lib/categoryColors'
 
 interface VocDetail {
   id: string
@@ -144,7 +145,7 @@ export default function VocDetailPage() {
       alert('네트워크 오류가 발생했습니다.')
     }
     setSavingPermanent(false)
-  }  
+  }
 
   const handleSoftDelete = async () => {
     if (!record) return
@@ -182,8 +183,8 @@ export default function VocDetailPage() {
 
   return (
     <div className="w-full">
-      {/* ── 헤더 ── */}
-      <div className="flex items-center gap-3 mb-6">
+      {/* ── 헤더 — 모바일: 줄바꿈 허용 ── */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
         <button onClick={() => navigate('/voc')} className="text-sm text-gray-400 hover:text-gray-600">
           ← 목록
         </button>
@@ -196,13 +197,22 @@ export default function VocDetailPage() {
         {record.is_permanent && (
           <span className="px-2 py-0.5 text-xs rounded-full bg-indigo-100 text-indigo-600">📌 영구 저장</span>
         )}
-        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500 ml-auto">
+        {/* 카테고리 뱃지 — HSL 해시 색상 */}
+        {record.category_id && (
+          <span
+            className="px-2 py-0.5 text-xs rounded-full font-medium"
+            style={getCategoryStyle(record.category_id)}
+          >
+            {getCategoryName(record.category_id)}
+          </span>
+        )}
+        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500 sm:ml-auto">
           {STATUS_LABEL[record.processing_status] ?? record.processing_status}
         </span>
       </div>
 
-      {/* ── 2컬럼 레이아웃 ── */}
-      <div className="grid grid-cols-2 gap-4">
+      {/* ── 레이아웃: 모바일 1열 / 데스크탑 2열 ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
         {/* ── 좌측 컬럼 ── */}
         <div className="flex flex-col gap-4">

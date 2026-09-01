@@ -88,10 +88,13 @@ export default function PromptsPage() {
   }
 
   return (
+    // max-w-4xl로 너비 제한 — 모바일에서는 px-0으로 여백 없음
     <div className="max-w-4xl mx-auto">
       <div className="mb-6">
         <h2 className="text-xl font-bold text-gray-800">프롬프트 관리</h2>
-        <p className="text-sm text-gray-500 mt-1">AI 분석에 사용되는 프롬프트를 관리합니다. 변경 사항은 다음 분석부터 즉시 반영됩니다.</p>
+        <p className="text-sm text-gray-500 mt-1">
+          AI 분석에 사용되는 프롬프트를 관리합니다. 변경 사항은 다음 분석부터 즉시 반영됩니다.
+        </p>
       </div>
 
       {error && (
@@ -105,18 +108,21 @@ export default function PromptsPage() {
       ) : (
         <div className="space-y-4">
           {prompts.map((prompt) => (
-            <div key={prompt.key} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <span className="text-xs font-mono bg-gray-100 text-gray-600 px-2 py-0.5 rounded mr-2">
-                    {prompt.key}
-                  </span>
-                  <span className="text-sm font-semibold text-gray-800">{prompt.label}</span>
-                  {successKey === prompt.key && (
-                    <span className="ml-2 text-xs text-green-600 font-medium">✓ 저장됨</span>
-                  )}
+            <div key={prompt.key} className="bg-white border border-gray-200 rounded-lg p-4 sm:p-5 shadow-sm">
+              {/* 헤더: 모바일에서 키/라벨 줄바꿈 허용 */}
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-mono bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
+                      {prompt.key}
+                    </span>
+                    <span className="text-sm font-semibold text-gray-800">{prompt.label}</span>
+                    {successKey === prompt.key && (
+                      <span className="text-xs text-green-600 font-medium">✓ 저장됨</span>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                     prompt.is_active
                       ? 'bg-green-50 text-green-700'
@@ -160,7 +166,7 @@ export default function PromptsPage() {
                   </div>
                 </div>
               ) : (
-                <pre className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-md p-3 font-mono leading-relaxed">
+                <pre className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-md p-3 font-mono leading-relaxed overflow-x-auto">
                   {prompt.content}
                 </pre>
               )}

@@ -6,6 +6,7 @@ import {
   type BarRectangleItem,
 } from 'recharts'
 import { supabase } from '../lib/supabase'
+import { getCategoryStyle } from '../lib/categoryColors'
 
 /* ─── 타입 ─── */
 interface VocRow {
@@ -44,9 +45,10 @@ interface ChartDatum {
 type BarClickData = BarRectangleItem & ChartDatum
 
 /* ─── 상수 ─── */
-const COLORS = [
-  '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
-  '#fb7185', '#facc15', '#34d399', '#38bdf8',
+// 차트 막대 색상 — categoryColors.ts의 HSL 해시와 동일 hue 계산
+const CHART_COLORS = [
+  '#8b5cf6', '#3b82f6', '#f43f5e', '#f59e0b',
+  '#14b8a6', '#ec4899', '#06b6d4', '#84cc16',
 ]
 const SENTIMENT_LABEL: Record<string, string> = {
   positive: '긍정', neutral: '중립', negative: '부정',
@@ -64,6 +66,8 @@ const getDefaultRange = () => {
   }
 }
 
+// [수정] getHours() 대신 Intl.DateTimeFormat 사용
+// → 브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 표시
 const formatDate = (str: string | null) => {
   if (!str) return '-'
   const d = new Date(str)
@@ -84,15 +88,33 @@ const formatDuration = (sec: number | null) => {
   return `${m}′${String(s).padStart(2, '0')}″`
 }
 
+/* ─── 카테고리 뱃지 ─────────────────────────────────────────────
+   ID 해시 기반 HSL 색상 자동 적용 (카테고리 추가 시 코드 수정 불필요)
+   ─────────────────────────────────────────────────────────────── */
+function CategoryBadge({ id, name }: { id: string | null; name: string | null }) {
+  if (!id || !name) return <span className="text-gray-300">-</span>
+  return (
+    <span
+      className="px-1.5 py-0.5 rounded-full text-xs font-medium"
+      style={getCategoryStyle(id)}
+    >
+      {name}
+    </span>
+  )
+}
+
 /* ─── 아코디언 상세 패널 ─── */
 function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: () => void }) {
   return (
     <tr>
       <td colSpan={8} className="bg-gray-50 border-b border-green-100 px-0 py-0">
-        <div className="px-4 py-4 grid grid-cols-2 gap-4 text-xs">
+
+        {/* 데스크탑: 2단 그리드 */}
+        <div className="hidden sm:grid px-4 py-4 grid-cols-2 gap-4 text-xs">
 
           {/* 왼쪽: 통화 정보 + 키워드 + 후속조치 */}
           <div className="space-y-3">
+            {/* 통화 기본 정보 */}
             <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-1.5">
               <p className="text-xs font-semibold text-gray-500 mb-2">통화 정보</p>
               <div className="flex justify-between">
@@ -110,11 +132,9 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
                 </span>
               </div>
               {/* 카테고리 (상위) */}
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <span className="text-gray-400">카테고리</span>
-                <span className="text-indigo-600">
-                  {record.categories?.name ?? '-'}
-                </span>
+                <CategoryBadge id={record.category_id} name={record.categories?.name ?? null} />
               </div>
               {record.is_permanent && (
                 <div className="flex justify-between">
@@ -170,8 +190,52 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
               </button>
             </div>
           </div>
-
         </div>
+
+        {/* 모바일: 1단 */}
+        <div className="sm:hidden px-4 py-3 space-y-2 text-xs">
+          <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-1.5">
+            <div className="flex justify-between">
+              <span className="text-gray-400">통화 시작</span>
+              <span>{formatDate(record.call_started_at)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">통화 시간</span>
+              <span>{formatDuration(record.duration_sec)}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">카테고리</span>
+              <CategoryBadge id={record.category_id} name={record.categories?.name ?? null} />
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">감성</span>
+              <span className={record.sentiment ? SENTIMENT_COLOR[record.sentiment] : 'text-gray-300'}>
+                {record.sentiment ? (SENTIMENT_LABEL[record.sentiment] ?? record.sentiment) : '-'}
+              </span>
+            </div>
+          </div>
+          {record.summary && (
+            <div className="bg-white rounded-lg border border-gray-200 p-3">
+              <p className="font-semibold text-gray-500 mb-1">요약</p>
+              <p className="text-gray-700 leading-relaxed">{record.summary}</p>
+            </div>
+          )}
+          {record.action_required && (
+            <div className="bg-orange-50 rounded-lg border border-orange-100 p-3">
+              <p className="font-semibold text-orange-600 mb-1">⚠ 후속 조치</p>
+              <p className="text-gray-700">{record.action_memo ?? '조치 내용 없음'}</p>
+            </div>
+          )}
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={onOpenFull}
+              className="text-xs text-green-700 border border-green-300 rounded-lg px-3 py-1.5 hover:bg-green-50"
+            >
+              전체 상세 보기 →
+            </button>
+          </div>
+        </div>
+
       </td>
     </tr>
   )
@@ -248,7 +312,7 @@ export default function DashboardPage() {
         'id,phone_name,caller_number,call_direction,call_started_at,call_ended_at,' +
         'duration_sec,processing_status,sentiment,summary,transcript,keywords,' +
         'action_required,action_memo,is_permanent,s3_key,' +
-        'category_id,categories!voc_records_category_id_fkey(name)'   // 추가
+        'category_id,categories!voc_records_category_id_fkey(name)' // 추가
       )
       .eq('is_deleted', false)
       .gte('call_started_at', `${dateISO} 00:00:00`)
@@ -309,18 +373,18 @@ export default function DashboardPage() {
 
   return (
     <div>
-      {/* ── 헤더 ── */}
-      <div className="flex items-center justify-between mb-6">
+      {/* ── 헤더 — 모바일: 세로 스택 / 데스크탑: 가로 정렬 ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <h2 className="text-xl font-bold text-gray-800">대시보드</h2>
         <div className="flex items-center gap-2 text-sm">
           <input type="date" value={dateFrom}
             onChange={e => { setDateFrom(e.target.value); setSelectedDate(null); setExpandedId(null) }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="border border-gray-300 rounded-lg px-3 py-1.5 w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <span className="text-gray-400">~</span>
           <input type="date" value={dateTo}
             onChange={e => { setDateTo(e.target.value); setSelectedDate(null); setExpandedId(null) }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="border border-gray-300 rounded-lg px-3 py-1.5 w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
           />
         </div>
       </div>
@@ -329,10 +393,10 @@ export default function DashboardPage() {
         <p className="text-gray-400 text-sm">불러오는 중...</p>
       ) : (
         <>
-          {/* ── 요약 카드 ── */}
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          {/* ── 요약 카드 — 모바일 1열, 데스크탑 3열 ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
             {cards.map(({ label, value, unit, color }) => (
-              <div key={label} className="bg-white rounded-xl border border-gray-200 p-5">
+              <div key={label} className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5">
                 <p className="text-xs text-gray-500 mb-1">{label}</p>
                 <p className={`text-3xl font-bold ${color}`}>
                   {value.toLocaleString()}
@@ -343,7 +407,7 @@ export default function DashboardPage() {
           </div>
 
           {/* ── 차트 ── */}
-          <div className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 mb-4">
             <p className="text-sm font-semibold text-gray-700 mb-1">
               일자별 · 카테고리별 VOC 현황
             </p>
@@ -353,19 +417,19 @@ export default function DashboardPage() {
             {chartData.length === 0 ? (
               <p className="text-gray-400 text-sm text-center py-10">해당 기간에 VOC 데이터가 없습니다.</p>
             ) : (
-              <ResponsiveContainer width="100%" height={300}>
+              <ResponsiveContainer width="100%" height={260}>
                 <BarChart
                   data={chartData}
-                  margin={{ top: 4, right: 16, left: 0, bottom: 4 }}
+                  margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
                   style={{ cursor: 'pointer' }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                   <Tooltip formatter={(value, name) => [value, name]} contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   {categoryKeys.map((cat, i) => (
-                    <Bar key={cat} dataKey={cat} stackId="a" fill={COLORS[i % COLORS.length]} onClick={handleBarClick} />
+                    <Bar key={cat} dataKey={cat} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} onClick={handleBarClick} />
                   ))}
                 </BarChart>
               </ResponsiveContainer>
@@ -375,7 +439,7 @@ export default function DashboardPage() {
           {/* ── 드릴다운 패널 ── */}
           {selectedDate && (
             <div className="bg-white rounded-xl border border-green-200 shadow-sm overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-3 bg-green-50 border-b border-green-100">
+              <div className="flex items-center justify-between px-4 sm:px-5 py-3 bg-green-50 border-b border-green-100">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-green-800">
                     📋 {selectedDate.slice(5, 7)}/{selectedDate.slice(8, 10)} VOC 목록
@@ -389,7 +453,7 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => navigate(`/voc?date=${selectedDate}`)}
-                    className="text-xs text-green-700 underline hover:text-green-900"
+                    className="hidden sm:inline text-xs text-green-700 underline hover:text-green-900"
                   >
                     전체 페이지로 보기 →
                   </button>
@@ -407,68 +471,108 @@ export default function DashboardPage() {
               ) : drillRecords.length === 0 ? (
                 <p className="text-gray-400 text-sm text-center py-8">해당 날짜의 VOC가 없습니다.</p>
               ) : (
-                <table className="w-full text-xs table-fixed">
-                  <colgroup>
-                    <col style={{ width: '2%' }} />   {/* 토글 */}
-                    <col style={{ width: '8%' }} />   {/* 업무폰 */}
-                    <col style={{ width: '11%' }} />  {/* 발신번호 */}
-                    <col style={{ width: '5%' }} />   {/* 방향 */}
-                    <col style={{ width: '9%' }} />   {/* 통화시작 */}
-                    <col style={{ width: '5%' }} />   {/* 감성 */}
-                    <col style={{ width: '8%' }} />   {/* 카테고리 */}
-                    <col style={{ width: '52%' }} />  {/* 요약 */}
-                  </colgroup>
-                  <thead className="bg-gray-50 border-b border-gray-200">
-                    <tr>
-                      <th />
-                      {['업무폰', '발신번호', '방향', '통화시작', '감성', '카테고리', '요약'].map(h => (
-                        <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
+                <>
+                  {/* 데스크탑: 테이블 */}
+                  <div className="hidden sm:block">
+                    <table className="w-full text-xs table-fixed">
+                      <colgroup>
+                        <col style={{ width: '2%' }} />   {/* 토글 */}
+                        <col style={{ width: '8%' }} />   {/* 업무폰 */}
+                        <col style={{ width: '11%' }} />  {/* 발신번호 */}
+                        <col style={{ width: '5%' }} />   {/* 방향 */}
+                        <col style={{ width: '9%' }} />   {/* 통화시작 */}
+                        <col style={{ width: '5%' }} />   {/* 감성 */}
+                        <col style={{ width: '8%' }} />   {/* 카테고리 */}
+                        <col style={{ width: '52%' }} />  {/* 요약 */}
+                      </colgroup>
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th />
+                          {['업무폰', '발신번호', '방향', '통화시작', '감성', '카테고리', '요약'].map(h => (
+                            <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {drillRecords.map(r => (
+                          <>
+                            <tr
+                              key={r.id}
+                              onClick={() => handleRowClick(r.id)}
+                              className={`cursor-pointer transition-colors ${expandedId === r.id ? 'bg-green-50' : 'hover:bg-gray-50'}`}
+                            >
+                              <td className="px-2 py-2.5 text-center text-gray-300">
+                                <span className={`inline-block transition-transform duration-200 ${expandedId === r.id ? 'rotate-90' : ''}`}>▶</span>
+                              </td>
+                              <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
+                                {r.phone_name ?? '-'}
+                              </td>
+                              <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
+                                {r.caller_number ?? '-'}
+                              </td>
+                              <td className="px-3 py-2.5 whitespace-nowrap">
+                                {r.call_direction === 'incoming'
+                                  ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
+                                  : r.call_direction === 'outgoing'
+                                  ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
+                                  : <span className="text-gray-300">-</span>}
+                              </td>
+                              <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
+                                {formatDate(r.call_started_at)}
+                              </td>
+                              <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
+                                {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
+                              </td>
+                              {/* 카테고리 컬럼 (상위 카테고리) — HSL 해시 색상 자동 적용 */}
+                              <td className="px-3 py-2.5 whitespace-nowrap">
+                                <CategoryBadge id={r.category_id} name={r.categories?.name ?? null} />
+                              </td>
+                              <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
+                                {r.summary ?? <span className="text-gray-200">-</span>}
+                              </td>
+                            </tr>
+
+                            {/* 아코디언 상세 패널 */}
+                            {expandedId === r.id && (
+                              <DetailPanel
+                                key={`detail-${r.id}`}
+                                record={r}
+                                onOpenFull={() => navigate(`/voc/${r.id}`)}
+                              />
+                            )}
+                          </>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* 모바일: 카드 리스트 */}
+                  <div className="sm:hidden divide-y divide-gray-100">
                     {drillRecords.map(r => (
                       <>
-                        <tr
-                          key={r.id}
+                        <div key={r.id}
                           onClick={() => handleRowClick(r.id)}
-                          className={`cursor-pointer transition-colors ${expandedId === r.id ? 'bg-green-50' : 'hover:bg-gray-50'}`}
-                        >
-                          <td className="px-2 py-2.5 text-center text-gray-300">
-                            <span className={`inline-block transition-transform duration-200 ${expandedId === r.id ? 'rotate-90' : ''}`}>▶</span>
-                          </td>
-                          <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
-                            {r.phone_name ?? '-'}
-                          </td>
-                          <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
-                            {r.caller_number ?? '-'}
-                          </td>
-                          <td className="px-3 py-2.5 whitespace-nowrap">
+                          className={`p-4 cursor-pointer ${expandedId === r.id ? 'bg-green-50' : 'active:bg-gray-50'}`}>
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <CategoryBadge id={r.category_id} name={r.categories?.name ?? null} />
+                            {r.sentiment && (
+                              <span className={`text-xs font-medium ${SENTIMENT_COLOR[r.sentiment]}`}>
+                                {SENTIMENT_LABEL[r.sentiment]}
+                              </span>
+                            )}
+                            <span className="ml-auto text-xs text-gray-400">{formatDate(r.call_started_at)}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-mono text-sm font-semibold text-gray-800">{r.caller_number ?? '-'}</span>
                             {r.call_direction === 'incoming'
-                              ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
+                              ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500 text-xs">수신</span>
                               : r.call_direction === 'outgoing'
-                              ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
-                              : <span className="text-gray-300">-</span>}
-                          </td>
-                          <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
-                            {formatDate(r.call_started_at)}
-                          </td>
-                          <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
-                            {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
-                          </td>
-                          {/* 카테고리 컬럼 (상위 카테고리) */}
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            {r.categories?.name
-                              ? <span className="px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-xs">
-                                  {r.categories.name}
-                                </span>
-                              : <span className="text-gray-300">-</span>}
-                          </td>
-                          <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
-                            {r.summary ?? <span className="text-gray-200">-</span>}
-                          </td>
-                        </tr>
-
+                              ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500 text-xs">발신</span>
+                              : null}
+                            {r.phone_name && <span className="text-xs text-gray-400 truncate">{r.phone_name}</span>}
+                          </div>
+                          {r.summary && <p className="text-xs text-gray-500 line-clamp-2">{r.summary}</p>}
+                        </div>
                         {expandedId === r.id && (
                           <DetailPanel
                             key={`detail-${r.id}`}
@@ -478,8 +582,8 @@ export default function DashboardPage() {
                         )}
                       </>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                </>
               )}
             </div>
           )}

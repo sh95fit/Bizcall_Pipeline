@@ -92,53 +92,104 @@ export default function PhonesPage() {
         </button>
       </div>
 
-      {/* 테이블 */}
       {loading ? (
         <p className="text-gray-400 text-sm">불러오는 중...</p>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                {['기기명', '상태', '토큰', '기기 ID', '최근 접속', '등록일', '관리'].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {phones.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">등록된 업무폰이 없습니다</td></tr>
-              ) : phones.map(phone => (
-                <tr key={phone.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-800">{phone.name}</td>
-                  <td className="px-4 py-3">{statusBadge(phone)}</td>
-                  <td className="px-4 py-3 font-mono text-gray-500">{phone.token}</td>
-                  <td className="px-4 py-3 text-gray-400 text-xs">{phone.device_id ?? '-'}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(phone.last_seen_at)}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(phone.registered_at)}</td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => handleToggleActive(phone)}
-                      className={`text-xs px-3 py-1 rounded-md border transition-colors ${
-                        phone.is_active
-                          ? 'border-red-200 text-red-500 hover:bg-red-50'
-                          : 'border-green-200 text-green-600 hover:bg-green-50'
-                      }`}
-                    >
-                      {phone.is_active ? '비활성화' : '활성화'}
-                    </button>
-                  </td>
+        <>
+          {/* ── 데스크탑: 테이블 ── */}
+          <div className="hidden sm:block bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  {['기기명', '상태', '토큰', '기기 ID', '최근 접속', '등록일', '관리'].map(h => (
+                    <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500">{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {phones.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">등록된 업무폰이 없습니다</td></tr>
+                ) : phones.map(phone => (
+                  <tr key={phone.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-800">{phone.name}</td>
+                    <td className="px-4 py-3">{statusBadge(phone)}</td>
+                    <td className="px-4 py-3 font-mono text-gray-500 text-xs">{phone.token}</td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{phone.device_id ?? '-'}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(phone.last_seen_at)}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(phone.registered_at)}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleToggleActive(phone)}
+                        className={`text-xs px-3 py-1 rounded-md border transition-colors ${
+                          phone.is_active
+                            ? 'border-red-200 text-red-500 hover:bg-red-50'
+                            : 'border-green-200 text-green-600 hover:bg-green-50'
+                        }`}
+                      >
+                        {phone.is_active ? '비활성화' : '활성화'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── 모바일: 카드 리스트 ── */}
+          <div className="sm:hidden space-y-3">
+            {phones.length === 0 ? (
+              <p className="text-gray-400 text-sm text-center py-8">등록된 업무폰이 없습니다</p>
+            ) : phones.map(phone => (
+              <div key={phone.id} className="bg-white rounded-xl border border-gray-200 p-4">
+                {/* 상단: 기기명 + 상태 */}
+                <div className="flex items-center justify-between mb-3">
+                  <span className="font-semibold text-gray-800">{phone.name}</span>
+                  {statusBadge(phone)}
+                </div>
+                {/* 토큰 */}
+                <div className="mb-2">
+                  <p className="text-xs text-gray-400 mb-0.5">등록 토큰</p>
+                  <p className="font-mono text-sm text-gray-600 bg-gray-50 rounded px-2 py-1">{phone.token}</p>
+                </div>
+                {/* 기기 ID */}
+                {phone.device_id && (
+                  <div className="mb-2">
+                    <p className="text-xs text-gray-400 mb-0.5">기기 ID</p>
+                    <p className="text-xs text-gray-500 truncate">{phone.device_id}</p>
+                  </div>
+                )}
+                {/* 날짜 정보 */}
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <div>
+                    <p className="text-xs text-gray-400 mb-0.5">최근 접속</p>
+                    <p className="text-xs text-gray-500">{formatDate(phone.last_seen_at)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400 mb-0.5">등록일</p>
+                    <p className="text-xs text-gray-500">{formatDate(phone.registered_at)}</p>
+                  </div>
+                </div>
+                {/* 관리 버튼 */}
+                <button
+                  onClick={() => handleToggleActive(phone)}
+                  className={`w-full text-sm py-2 rounded-lg border transition-colors ${
+                    phone.is_active
+                      ? 'border-red-200 text-red-500 hover:bg-red-50'
+                      : 'border-green-200 text-green-600 hover:bg-green-50'
+                  }`}
+                >
+                  {phone.is_active ? '비활성화' : '활성화'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
-      {/* 등록 모달 */}
+      {/* 등록 모달 — mx-4로 모바일 여백 확보 */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-800 mb-4">업무폰 등록</h3>
             <div className="space-y-4">
               <div>

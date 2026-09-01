@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { getCategoryStyle } from '../lib/categoryColors'
 
 interface VocRecord {
   id: string
@@ -27,6 +28,20 @@ const SENTIMENT_LABEL: Record<string, string> = {
 }
 const SENTIMENT_COLOR: Record<string, string> = {
   positive: 'text-green-600', neutral: 'text-gray-400', negative: 'text-red-500',
+}
+
+// ── 카테고리 뱃지 ──────────────────────────────────────────────
+// ID 해시 기반 HSL 색상 자동 적용 (카테고리 추가 시 코드 수정 불필요)
+function CategoryBadge({ id, name }: { id: string | null; name: string | null }) {
+  if (!id || !name) return <span className="text-gray-300">-</span>
+  return (
+    <span
+      className="px-1.5 py-0.5 rounded-full text-xs font-medium"
+      style={getCategoryStyle(id)}
+    >
+      {name}
+    </span>
+  )
 }
 
 export default function VocListPage() {
@@ -70,6 +85,7 @@ export default function VocListPage() {
     if (sentimentFilter !== 'all') query = query.eq('sentiment', sentimentFilter)
     if (searchText.trim()) query = query.ilike('caller_number', `%${searchText.trim()}%`)
 
+    // [수정] +09:00 offset 명시 → PostgreSQL이 KST 범위로 정확히 해석
     if (dateParam) {
       query = query
         .gte('call_started_at', `${dateParam}T00:00:00+09:00`)
@@ -84,6 +100,8 @@ export default function VocListPage() {
   useEffect(() => { setPage(0) }, [categoryFilter, sentimentFilter, searchText, dateParam])
   useEffect(() => { fetchRecords() }, [page, categoryFilter, sentimentFilter, searchText, dateParam])
 
+  // [수정] getHours() 대신 Intl.DateTimeFormat 사용
+  // → 브라우저 로컬 timezone과 무관하게 항상 KST 기준으로 표시
   const formatDate = (str: string | null) => {
     if (!str) return '-'
     const d = new Date(str)
@@ -99,6 +117,7 @@ export default function VocListPage() {
 
   return (
     <div>
+      {/* 헤더 */}
       <div className="flex items-center gap-3 mb-4">
         <h2 className="text-xl font-bold text-gray-800">VOC 목록</h2>
         {dateParam && (
@@ -109,18 +128,18 @@ export default function VocListPage() {
         )}
       </div>
 
-      {/* 필터 */}
-      <div className="flex gap-2 mb-4">
+      {/* 필터 — 모바일: 세로 스택 / 데스크탑: 가로 정렬 */}
+      <div className="flex flex-col sm:flex-row gap-2 mb-4">
         <input
           type="text" placeholder="발신번호 검색..."
           value={searchText} onChange={e => setSearchText(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-green-500"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full sm:w-40 focus:outline-none focus:ring-2 focus:ring-green-500"
         />
         {/* 카테고리 필터 (상위 카테고리) */}
         <select
           value={categoryFilter}
           onChange={e => setCategoryFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          className="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
         >
           <option value="all">전체 카테고리</option>
           {categories.map(c => (
@@ -131,7 +150,7 @@ export default function VocListPage() {
         <select
           value={sentimentFilter}
           onChange={e => setSentimentFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          className="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-auto focus:outline-none focus:ring-2 focus:ring-green-500"
         >
           <option value="all">전체 감성</option>
           <option value="positive">긍정</option>
@@ -140,77 +159,114 @@ export default function VocListPage() {
         </select>
       </div>
 
-      {/* 테이블 */}
+      {/* 콘텐츠 */}
       {loading ? (
         <p className="text-gray-400 text-sm">불러오는 중...</p>
+      ) : records.length === 0 ? (
+        <p className="text-gray-400 text-sm text-center py-12">데이터가 없습니다</p>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-xs table-fixed">
-            <colgroup>
-              <col style={{ width: '8%' }} />   {/* 업무폰 */}
-              <col style={{ width: '11%' }} />  {/* 발신번호 */}
-              <col style={{ width: '5%' }} />   {/* 방향 */}
-              <col style={{ width: '9%' }} />   {/* 통화시작 */}
-              <col style={{ width: '5%' }} />   {/* 감성 */}
-              <col style={{ width: '8%' }} />   {/* 카테고리 */}
-              <col style={{ width: '34%' }} />  {/* 요약 */}
-              <col style={{ width: '20%' }} />  {/* 후속 조치 */}
-            </colgroup>
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                {['업무폰', '발신번호', '방향', '통화시작', '감성', '카테고리', '요약', '후속 조치'].map(h => (
-                  <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {records.length === 0 ? (
+        <>
+          {/* ── 데스크탑: 테이블 ── */}
+          <div className="hidden sm:block bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <table className="w-full text-xs table-fixed">
+              <colgroup>
+                <col style={{ width: '8%' }} />   {/* 업무폰 */}
+                <col style={{ width: '11%' }} />  {/* 발신번호 */}
+                <col style={{ width: '5%' }} />   {/* 방향 */}
+                <col style={{ width: '9%' }} />   {/* 통화시작 */}
+                <col style={{ width: '5%' }} />   {/* 감성 */}
+                <col style={{ width: '8%' }} />   {/* 카테고리 */}
+                <col style={{ width: '34%' }} />  {/* 요약 */}
+                <col style={{ width: '20%' }} />  {/* 후속 조치 */}
+              </colgroup>
+              <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">데이터가 없습니다</td>
+                  {['업무폰', '발신번호', '방향', '통화시작', '감성', '카테고리', '요약', '후속 조치'].map(h => (
+                    <th key={h} className="text-left px-3 py-2.5 text-xs font-medium text-gray-500 whitespace-nowrap">{h}</th>
+                  ))}
                 </tr>
-              ) : records.map(r => (
-                <tr key={r.id} onClick={() => navigate(`/voc/${r.id}`)}
-                  className="hover:bg-gray-50 cursor-pointer">
-                  <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
-                    {r.phone_name ?? '-'}
-                  </td>
-                  <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
-                    {r.caller_number ?? '-'}
-                  </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    {r.call_direction === 'incoming'
-                      ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
-                      : r.call_direction === 'outgoing'
-                      ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
-                      : <span className="text-gray-300">-</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
-                    {formatDate(r.call_started_at)}
-                  </td>
-                  <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
-                    {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
-                  </td>
-                  {/* 카테고리 컬럼 (상위 카테고리) */}
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    {r.categories?.name
-                      ? <span className="px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-xs">
-                          {r.categories.name}
-                        </span>
-                      : <span className="text-gray-300">-</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
-                    {r.summary ?? <span className="text-gray-200">-</span>}
-                  </td>
-                  <td className="px-3 py-2.5 truncate overflow-hidden whitespace-nowrap">
-                    {r.action_required
-                      ? <span className="text-orange-500">⚠ {r.action_memo ?? '조치 필요'}</span>
-                      : <span className="text-gray-200">-</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {records.map(r => (
+                  <tr key={r.id} onClick={() => navigate(`/voc/${r.id}`)}
+                    className="hover:bg-gray-50 cursor-pointer">
+                    <td className="px-3 py-2.5 text-gray-700 truncate overflow-hidden whitespace-nowrap">
+                      {r.phone_name ?? '-'}
+                    </td>
+                    <td className="px-3 py-2.5 font-mono text-gray-600 whitespace-nowrap">
+                      {r.caller_number ?? '-'}
+                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      {r.call_direction === 'incoming'
+                        ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500">수신</span>
+                        : r.call_direction === 'outgoing'
+                        ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500">발신</span>
+                        : <span className="text-gray-300">-</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
+                      {formatDate(r.call_started_at)}
+                    </td>
+                    <td className={`px-3 py-2.5 font-medium whitespace-nowrap ${r.sentiment ? SENTIMENT_COLOR[r.sentiment] : 'text-gray-300'}`}>
+                      {r.sentiment ? (SENTIMENT_LABEL[r.sentiment] ?? r.sentiment) : '-'}
+                    </td>
+                    {/* 카테고리 컬럼 (상위 카테고리) — HSL 해시 색상 자동 적용 */}
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      <CategoryBadge id={r.category_id} name={r.categories?.name ?? null} />
+                    </td>
+                    <td className="px-3 py-2.5 text-gray-400 truncate overflow-hidden whitespace-nowrap">
+                      {r.summary ?? <span className="text-gray-200">-</span>}
+                    </td>
+                    <td className="px-3 py-2.5 truncate overflow-hidden whitespace-nowrap">
+                      {r.action_required
+                        ? <span className="text-orange-500">⚠ {r.action_memo ?? '조치 필요'}</span>
+                        : <span className="text-gray-200">-</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── 모바일: 카드 리스트 ── */}
+          <div className="sm:hidden space-y-2">
+            {records.map(r => (
+              <div key={r.id}
+                onClick={() => navigate(`/voc/${r.id}`)}
+                className="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer active:bg-gray-50">
+                {/* 상단: 카테고리 뱃지 + 감성 + 시각 */}
+                <div className="flex items-center gap-2 mb-2">
+                  <CategoryBadge id={r.category_id} name={r.categories?.name ?? null} />
+                  {r.sentiment && (
+                    <span className={`text-xs font-medium ${SENTIMENT_COLOR[r.sentiment]}`}>
+                      {SENTIMENT_LABEL[r.sentiment]}
+                    </span>
+                  )}
+                  <span className="ml-auto text-xs text-gray-400">{formatDate(r.call_started_at)}</span>
+                </div>
+                {/* 중단: 발신번호 + 방향 + 업무폰 */}
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="font-mono text-sm font-semibold text-gray-800">{r.caller_number ?? '-'}</span>
+                  {r.call_direction === 'incoming'
+                    ? <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-500 text-xs">수신</span>
+                    : r.call_direction === 'outgoing'
+                    ? <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-500 text-xs">발신</span>
+                    : null}
+                  {r.phone_name && (
+                    <span className="text-xs text-gray-400 truncate">{r.phone_name}</span>
+                  )}
+                </div>
+                {/* 하단: 요약 */}
+                {r.summary && (
+                  <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">{r.summary}</p>
+                )}
+                {/* 후속 조치 */}
+                {r.action_required && (
+                  <div className="mt-2 text-xs text-orange-500">⚠ {r.action_memo ?? '조치 필요'}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {/* 페이지네이션 */}

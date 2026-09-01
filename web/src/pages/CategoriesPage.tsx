@@ -113,10 +113,11 @@ export default function CategoriesPage() {
           )}
           {parentCategories.map(parent => (
             <div key={parent.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              {/* 상위 카테고리 */}
+
+              {/* 상위 카테고리 행 */}
               <div className="flex items-center px-4 py-3 border-b border-gray-100">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0 mr-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-gray-800 text-sm">{parent.name}</span>
                     {!parent.is_active && (
                       <span className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-400 rounded">비활성</span>
@@ -124,40 +125,35 @@ export default function CategoriesPage() {
                     <span className="text-xs text-gray-400">순서: {parent.sort_order}</span>
                   </div>
                   {parent.description && (
-                    <p className="text-xs text-gray-400 mt-0.5">{parent.description}</p>
+                    <p className="text-xs text-gray-400 mt-0.5 truncate">{parent.description}</p>
                   )}
                 </div>
-                <div className="flex gap-2">
+                {/* 관리 버튼 — 모바일에서 아이콘 텍스트로 압축 */}
+                <div className="flex gap-1.5 shrink-0">
                   <button
                     onClick={() => openEdit(parent)}
-                    className="text-xs px-2.5 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-600"
-                  >
-                    수정
-                  </button>
+                    className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-600"
+                  >수정</button>
                   <button
                     onClick={() => handleToggleActive(parent)}
-                    className={`text-xs px-2.5 py-1 border rounded transition-colors ${
+                    className={`text-xs px-2 py-1 border rounded transition-colors ${
                       parent.is_active
                         ? 'border-gray-200 text-gray-500 hover:bg-gray-50'
                         : 'border-green-200 text-green-600 hover:bg-green-50'
                     }`}
-                  >
-                    {parent.is_active ? '비활성화' : '활성화'}
-                  </button>
+                  >{parent.is_active ? '비활성화' : '활성화'}</button>
                   <button
                     onClick={() => handleDelete(parent)}
-                    className="text-xs px-2.5 py-1 border border-red-200 text-red-400 rounded hover:bg-red-50"
-                  >
-                    삭제
-                  </button>
+                    className="text-xs px-2 py-1 border border-red-200 text-red-400 rounded hover:bg-red-50"
+                  >삭제</button>
                 </div>
               </div>
 
-              {/* 하위 카테고리 */}
+              {/* 하위 카테고리 행 */}
               {getChildren(parent.id).map(child => (
                 <div key={child.id} className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-100 last:border-0">
-                  <div className="flex-1 pl-4">
-                    <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0 pl-4 mr-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-gray-400 text-xs">└</span>
                       <span className="text-sm text-gray-700">{child.name}</span>
                       {!child.is_active && (
@@ -166,32 +162,26 @@ export default function CategoriesPage() {
                       <span className="text-xs text-gray-400">순서: {child.sort_order}</span>
                     </div>
                     {child.description && (
-                      <p className="text-xs text-gray-400 mt-0.5 pl-3">{child.description}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 pl-3 truncate">{child.description}</p>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-1.5 shrink-0">
                     <button
                       onClick={() => openEdit(child)}
-                      className="text-xs px-2.5 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-600"
-                    >
-                      수정
-                    </button>
+                      className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-600"
+                    >수정</button>
                     <button
                       onClick={() => handleToggleActive(child)}
-                      className={`text-xs px-2.5 py-1 border rounded transition-colors ${
+                      className={`text-xs px-2 py-1 border rounded transition-colors ${
                         child.is_active
                           ? 'border-gray-200 text-gray-500 hover:bg-gray-50'
                           : 'border-green-200 text-green-600 hover:bg-green-50'
                       }`}
-                    >
-                      {child.is_active ? '비활성화' : '활성화'}
-                    </button>
+                    >{child.is_active ? '비활성화' : '활성화'}</button>
                     <button
                       onClick={() => handleDelete(child)}
-                      className="text-xs px-2.5 py-1 border border-red-200 text-red-400 rounded hover:bg-red-50"
-                    >
-                      삭제
-                    </button>
+                      className="text-xs px-2 py-1 border border-red-200 text-red-400 rounded hover:bg-red-50"
+                    >삭제</button>
                   </div>
                 </div>
               ))}
@@ -200,10 +190,10 @@ export default function CategoriesPage() {
         </div>
       )}
 
-      {/* 모달 */}
+      {/* 모달 — mx-4로 모바일 여백 확보 */}
       {showModal && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-800 mb-4">
               {editTarget ? '카테고리 수정' : '카테고리 추가'}
             </h3>
@@ -257,16 +247,12 @@ export default function CategoriesPage() {
               <button
                 onClick={() => setShowModal(false)}
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
-              >
-                취소
-              </button>
+              >취소</button>
               <button
                 onClick={handleSave}
                 disabled={saving}
                 className="flex-1 px-4 py-2 bg-green-700 text-white rounded-lg text-sm hover:bg-green-800 disabled:opacity-50"
-              >
-                {saving ? '저장 중...' : '저장'}
-              </button>
+              >{saving ? '저장 중...' : '저장'}</button>
             </div>
           </div>
         </div>
