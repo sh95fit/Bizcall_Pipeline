@@ -178,6 +178,42 @@ def save_silent_record(meta: dict, phone: dict, s3_key: str, timing: dict):
         print(f"save_silent_record 오류: {e}")
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [추가] STT / AI 최종 실패 시 failed 상태로 DB에 기록
+# 재시도를 모두 소진한 뒤 main.py except 블록에서 호출됨.
+# s3_key, caller_number, call_started_at 등 기본 메타데이터는 보존하여
+# 관리자가 VOC 목록에서 원인을 파악하고 필요 시 수동 재처리 가능.
+# action_memo 에 오류 메시지를 기록해 실패 원인 추적 지원.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def save_failed_record(meta: dict, phone: dict, s3_key: str, timing: dict, error_msg: str):
+    try:
+        supabase.table("voc_records").insert({
+            "phone_id": phone.get("id"),
+            "phone_name": phone.get("name"),
+            "caller_number": meta.get("caller_number"),
+            "call_direction": meta.get("direction"),
+            "call_started_at": meta.get("call_started_at"),
+            "call_ended_at": timing.get("call_ended_at"),
+            "duration_sec": timing.get("duration_sec"),
+            "s3_key": s3_key,
+            "transcript": None,
+            "summary": None,
+            "category_id": None,
+            "sentiment": None,
+            "keywords": [],
+            "action_required": False,
+            "action_memo": f"[처리 실패] {error_msg}",
+            "processing_status": "failed",
+        }).execute()
+        print(f"failed 상태로 DB 저장 완료: {s3_key}")
+    except Exception as db_err:
+        if is_duplicate_insert_error(db_err):
+            print(f"failed 중복 insert 차단 (23505): {s3_key}")
+            return
+        # failed 저장마저 실패해도 Lambda는 정상 종료 (로그만 남김)
+        print(f"failed 레코드 DB 저장 실패 (로그만 기록): {db_err}")
+
+
 def lambda_handler(event, context):
     print("bizcall-pipeline received event:", json.dumps(event))
 
@@ -195,24 +231,31 @@ def lambda_handler(event, context):
         )
 
     for record in event.get("Records", []):
-        body = json.loads(record["body"])
-        s3_event = body.get("Records", [{}])[0]
-        bucket = s3_event["s3"]["bucket"]["name"]
-        key = s3_event["s3"]["object"]["key"]
-        print(f"Processing s3://{bucket}/{key}")
-
-        meta = parse_s3_key(key)
-        print("Parsed metadata:", meta)
-
-        timing = get_call_timing_from_s3(bucket, key)
-        print(f"Call timing: end={timing.get('call_ended_at')}, "
-              f"duration={timing.get('duration_sec')}s")
-
-        phone = get_phone_record(meta.get("phone_id", ""))
-        print("Phone record:", phone)
-
+        # [추가] failed 저장 시 필요한 변수들 루프 상단에서 초기화
+        # try 블록 진입 전 오류 발생 시에도 except 에서 안전하게 참조 가능
+        key    = ""
+        meta   = {}
+        phone  = {}
+        timing = {}
         tmp_path: str | None = None
+
         try:
+            body = json.loads(record["body"])
+            s3_event = body.get("Records", [{}])[0]
+            bucket = s3_event["s3"]["bucket"]["name"]
+            key = s3_event["s3"]["object"]["key"]
+            print(f"Processing s3://{bucket}/{key}")
+
+            meta = parse_s3_key(key)
+            print("Parsed metadata:", meta)
+
+            timing = get_call_timing_from_s3(bucket, key)
+            print(f"Call timing: end={timing.get('call_ended_at')}, "
+                  f"duration={timing.get('duration_sec')}s")
+
+            phone = get_phone_record(meta.get("phone_id", ""))
+            print("Phone record:", phone)
+
             with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
                 s3.download_fileobj(bucket, key, tmp)
                 tmp_path = tmp.name
@@ -223,6 +266,7 @@ def lambda_handler(event, context):
             # ── STT 단계 ──────────────────────────────────────────────────
             if stt:
                 transcript = stt.transcribe(tmp_path)
+                # 재시도 소진 시 예외 raise → 아래 except 로 이동
                 if transcript is None:
                     print("STT 무음 감지 → AI/DB 단계 생략")
                     save_silent_record(meta, phone, key, timing)
@@ -240,6 +284,7 @@ def lambda_handler(event, context):
                 transcript=transcript,
                 file_path=tmp_path if not transcript else None,
             )
+            # 재시도 소진 시 예외 raise → 아래 except 로 이동
 
             if transcript is None or analysis is None:
                 print("AI 무음 감지 → DB 단계 생략")
@@ -280,6 +325,14 @@ def lambda_handler(event, context):
 
             if inserted:
                 print("Saved to voc_records: completed")
+
+        except Exception as e:
+            # ── [추가] 최종 실패 처리 ─────────────────────────────────────
+            # STT / AI 재시도를 모두 소진한 예외가 여기 도달
+            # Lambda 는 정상 종료(200) → SQS 재시도 없음
+            # failed 레코드를 DB에 남겨 관리자가 VOC 목록에서 확인 가능
+            print(f"[FINAL ERROR] {key}: {e}")
+            save_failed_record(meta, phone, key, timing, str(e))
 
         finally:
             if tmp_path and os.path.exists(tmp_path):

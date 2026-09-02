@@ -5,7 +5,7 @@ from google import genai
 from google.genai import types
 from .base import AIProvider
 
-# ── 코드 내장 기본값 (DB 프롬프트 없을 때 폴백) ───────────────────────────
+# ── 코드 내장 기본값 (DB 프롬프트 없을 때 폴백) ─────────────────────────────
 DEFAULT_BUSINESS_CONTEXT = (
     "이 음성 통화는 중소기업 임직원이 사용하는 업무용 전화 서비스에서 녹음된 실제 고객 응대 내용입니다.\n"
     "통화 상대방은 고객, 협력사, 또는 내부 관계자일 수 있습니다.\n"
@@ -44,7 +44,7 @@ DEFAULT_ACTION_GUIDE = (
     "action_memo 작성 기준:\n"
     "- action_required가 true일 때만 구체적으로 작성하세요.\n"
     "- 누가, 무엇을, 언제까지 해야 하는지 간결하게 작성하세요.\n"
-    "- false이면 반드시 빈 문자열(\"\")을 반환하세요."
+    '- false이면 반드시 빈 문자열("")을 반환하세요.'
 )
 
 OUTPUT_CAUTION = (
@@ -58,14 +58,22 @@ OUTPUT_CAUTION = (
 )
 
 MIN_TRANSCRIPT_LENGTH = 10
-FILE_READY_TIMEOUT_S = 60
+FILE_READY_TIMEOUT_S  = 60
 FILE_READY_INTERVAL_S = 2
+
+# ── 재시도 설정 ────────────────────────────────────────────────────────────────
+# generate_content()만 재시도 대상 (파일 업로드는 1회만 수행)
+# 최초 1회 + 재시도 2회 = 총 3회 시도
+# 429(Rate Limit), 5xx(서버 오류)만 재시도 대상 / 400·401·403은 즉시 실패
+AI_MAX_RETRIES     = 2
+AI_RETRY_DELAYS    = [10, 20]                    # 1차 실패 후 10s, 2차 실패 후 20s
+AI_RETRYABLE_CODES = {429, 500, 502, 503, 504}
 
 
 class GeminiAIProvider(AIProvider):
     def __init__(self):
         self.client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        self.model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        self.model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
     def supports_audio(self) -> bool:
         return True
@@ -85,18 +93,15 @@ class GeminiAIProvider(AIProvider):
                 lines.append(f"- {name}: {desc}")
             else:
                 lines.append(f"- {name}")
-
-        category_list = "\n".join(lines) if lines else "- 기타: 분류 불명확한 통화"
+        category_list  = "\n".join(lines) if lines else "- 기타: 분류 불명확한 통화"
         category_guide = self._get_prompt(prompts, "category_guide", DEFAULT_CATEGORY_GUIDE)
-
         return f"[카테고리 목록]\n{category_list}\n\n[카테고리 분류 원칙]\n{category_guide}"
 
     def _build_text_prompt(self, transcript: str, categories: list, prompts: dict) -> str:
         business_context = self._get_prompt(prompts, "business_context", DEFAULT_BUSINESS_CONTEXT)
-        sentiment_guide = self._get_prompt(prompts, "sentiment_guide", DEFAULT_SENTIMENT_GUIDE)
-        action_guide = self._get_prompt(prompts, "action_guide", DEFAULT_ACTION_GUIDE)
+        sentiment_guide  = self._get_prompt(prompts, "sentiment_guide",  DEFAULT_SENTIMENT_GUIDE)
+        action_guide     = self._get_prompt(prompts, "action_guide",     DEFAULT_ACTION_GUIDE)
         category_section = self._build_category_section(categories, prompts)
-
         return (
             "당신은 비즈니스 전화 통화를 분석하는 전문 AI입니다.\n"
             f"{business_context}\n\n"
@@ -119,10 +124,9 @@ class GeminiAIProvider(AIProvider):
 
     def _build_audio_prompt(self, categories: list, prompts: dict) -> str:
         business_context = self._get_prompt(prompts, "business_context", DEFAULT_BUSINESS_CONTEXT)
-        sentiment_guide = self._get_prompt(prompts, "sentiment_guide", DEFAULT_SENTIMENT_GUIDE)
-        action_guide = self._get_prompt(prompts, "action_guide", DEFAULT_ACTION_GUIDE)
+        sentiment_guide  = self._get_prompt(prompts, "sentiment_guide",  DEFAULT_SENTIMENT_GUIDE)
+        action_guide     = self._get_prompt(prompts, "action_guide",     DEFAULT_ACTION_GUIDE)
         category_section = self._build_category_section(categories, prompts)
-
         return (
             "당신은 비즈니스 전화 통화를 분석하는 전문 AI입니다.\n"
             f"{business_context}\n\n"
@@ -161,11 +165,69 @@ class GeminiAIProvider(AIProvider):
                 )
             print(f"파일 처리 대기 중... ({elapsed}s)")
             time.sleep(FILE_READY_INTERVAL_S)
-            elapsed += FILE_READY_INTERVAL_S
-            uploaded = self.client.files.get(name=uploaded.name)
+            elapsed  += FILE_READY_INTERVAL_S
+            uploaded  = self.client.files.get(name=uploaded.name)
 
         print(f"파일 ACTIVE 확인: {uploaded.name}")
         return uploaded
+
+    def _generate_with_retry(self, **kwargs) -> object:
+        """
+        generate_content()를 재시도 포함해서 호출.
+        파일 업로드는 호출 전에 1회만 완료된 상태이므로 generate만 재시도.
+
+        Returns:
+            generate_content 응답 객체
+        Raises:
+            Exception : 재시도 횟수 초과 또는 재시도 불가 오류
+                        → analyze() → main.py except 에서 failed 상태로 DB 저장
+        """
+        last_exception = None
+
+        for attempt in range(AI_MAX_RETRIES + 1):  # 0, 1, 2
+            try:
+                if attempt > 0:
+                    delay = AI_RETRY_DELAYS[attempt - 1]
+                    print(f"AI 재시도 {attempt}/{AI_MAX_RETRIES} — {delay}초 대기 중...")
+                    time.sleep(delay)
+
+                return self.client.models.generate_content(**kwargs)  # 성공 시 즉시 반환
+
+            except Exception as e:
+                status_code    = self._extract_status_code(e)
+                last_exception = e
+
+                if status_code not in AI_RETRYABLE_CODES:
+                    # 400, 401, 403 등 재시도해도 무의미한 오류 → 즉시 raise
+                    print(f"AI 재시도 불가 오류 (HTTP {status_code}): {e}")
+                    raise
+
+                print(f"AI 오류 (HTTP {status_code}, 시도 {attempt + 1}/{AI_MAX_RETRIES + 1}): {e}")
+
+                if attempt == AI_MAX_RETRIES:
+                    print("AI 최대 재시도 횟수 초과 → 실패 처리")
+                    raise  # main.py except 로 전파
+
+        raise last_exception  # 안전망 (정상 흐름에서 도달하지 않음)
+
+    @staticmethod
+    def _extract_status_code(e: Exception) -> int | None:
+        """
+        예외에서 HTTP 상태코드 추출 (google-genai SDK 구조 대응)
+        google.genai APIError      → e.status_code 속성 보유
+        google.api_core 계열 오류  → e.code 속성 보유 (int)
+        그 외 예외는 문자열 파싱으로 fallback
+        """
+        if hasattr(e, "status_code"):
+            return e.status_code
+        if hasattr(e, "code") and isinstance(e.code, int):
+            return e.code
+        # 문자열 파싱 fallback
+        msg = str(e)
+        for code in AI_RETRYABLE_CODES:
+            if str(code) in msg:
+                return code
+        return None
 
     def analyze(
         self,
@@ -177,13 +239,16 @@ class GeminiAIProvider(AIProvider):
         """
         prompts: load_prompt_templates()에서 전달된 DB 프롬프트 dict.
                  None 또는 빈 dict면 코드 내장 기본값 사용.
+        Raises:
+            Exception : _generate_with_retry 최종 실패
+                        → main.py except 에서 failed 상태로 DB 저장
         """
         if prompts is None:
             prompts = {}
 
         if transcript:
             print("Gemini 텍스트 분석 모드")
-            result = self.client.models.generate_content(
+            result = self._generate_with_retry(
                 model=self.model,
                 contents=self._build_text_prompt(transcript, categories, prompts),
             )
@@ -193,10 +258,11 @@ class GeminiAIProvider(AIProvider):
             print("Gemini 오디오 File API 처리 모드")
             uploaded_file = None
             try:
+                # 업로드는 1회만 수행 — generate 실패 시 재시도해도 재업로드 없음
                 uploaded_file = self._upload_audio_file(file_path)
 
                 print("generate_content 호출 시작")
-                result = self.client.models.generate_content(
+                result = self._generate_with_retry(
                     model=self.model,
                     contents=[
                         uploaded_file,
@@ -219,19 +285,19 @@ class GeminiAIProvider(AIProvider):
                 extracted_transcript = parsed.pop("transcript", None)
 
                 if not extracted_transcript or \
-                   len(extracted_transcript.replace(" ", "")) < MIN_TRANSCRIPT_LENGTH:
+                        len(extracted_transcript.replace(" ", "")) < MIN_TRANSCRIPT_LENGTH:
                     print("Gemini 오디오 모드 — 유효 transcript 없음 → 무음 처리")
                     return None, None
 
                 return extracted_transcript, parsed
 
             finally:
+                # 성공·실패·재시도 완료 후 항상 업로드 파일 삭제
                 if uploaded_file is not None:
                     try:
                         self.client.files.delete(name=uploaded_file.name)
                         print(f"Gemini 업로드 파일 삭제 완료: {uploaded_file.name}")
                     except Exception as e:
                         print(f"Gemini 업로드 파일 삭제 실패 (무시): {e}")
-
         else:
             raise ValueError("transcript 또는 file_path 중 하나는 필수입니다.")
