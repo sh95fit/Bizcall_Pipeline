@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from google import genai
 from google.genai import types
@@ -69,14 +70,72 @@ AI_MAX_RETRIES     = 2
 AI_RETRY_DELAYS    = [10, 20]                    # 1차 실패 후 10s, 2차 실패 후 20s
 AI_RETRYABLE_CODES = {429, 500, 502, 503, 504}
 
+# ── Thinking 설정 ──────────────────────────────────────────────────────────────
+# thinking_level 은 3.x 모델 전용 파라미터 (2.5 이하 계열에는 적용 불가)
+# 3.x 모델 감지: 모델명에서 주 버전 숫자가 3 이상인 경우
+#
+# 환경변수 GEMINI_THINKING_LEVEL 로 런타임 제어 가능
+#   - 미설정 시 코드 기본값 "low" 적용
+#   - 3.6 Flash 지원: minimal, low, medium, high
+#   - 3.7 Flash 지원: minimal, low, medium, high
+#   - 3.8 Flash 지원: low, medium, high  (minimal 없음)
+#
+# 통화 분류·요약은 단순 구조화 작업(Simple task)에 해당하므로
+# Google 공식 권장에 따라 기본값 "low" 설정
+# (비용 최적화: minimal 지원 모델에서는 GEMINI_THINKING_LEVEL=minimal 로 절감 가능)
+THINKING_LEVEL_DEFAULT = "low"
+
+# 3.x 모델 버전 감지용 정규식
+# 예: gemini-3.6-flash, gemini-3.8-flash → 주 버전 "3" 추출
+_MODEL_VERSION_RE = re.compile(r"gemini-(\d+)\.")
+
 
 class GeminiAIProvider(AIProvider):
     def __init__(self):
         self.client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        self.model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        # 코드 기본값: gemini-3.6-flash
+        # 환경변수 GEMINI_MODEL 로 런타임 교체 가능
+        self.model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        # 환경변수 GEMINI_THINKING_LEVEL 로 런타임 제어
+        # 미설정 시 THINKING_LEVEL_DEFAULT("low") 적용
+        self.thinking_level = os.environ.get("GEMINI_THINKING_LEVEL", THINKING_LEVEL_DEFAULT)
+        print(f"GeminiAIProvider 초기화: model={self.model}, thinking_level={self.thinking_level}")
 
     def supports_audio(self) -> bool:
         return True
+
+    # ── 모델 버전 감지 ────────────────────────────────────────────────────────
+
+    def _is_gemini_3x(self) -> bool:
+        """
+        현재 모델이 Gemini 3.x 계열인지 확인.
+        thinking_level 파라미터는 3.x 전용이므로 적용 전 반드시 체크.
+
+        예)
+          gemini-3.6-flash → True
+          gemini-3.8-flash → True
+          gemini-2.5-flash → False
+        """
+        match = _MODEL_VERSION_RE.search(self.model)
+        if match:
+            return int(match.group(1)) >= 3
+        return False
+
+    def _build_thinking_config(self) -> types.GenerateContentConfig | None:
+        """
+        3.x 모델일 때만 ThinkingConfig 포함한 GenerateContentConfig 반환.
+        2.x 이하 모델이면 None 반환 → generate_content 에 config 미전달.
+
+        thinking_level 유효성은 API 호출 시 Gemini 서버가 검증.
+        잘못된 값이면 400 오류 → _extract_status_code 에서 재시도 불가로 처리.
+        """
+        if not self._is_gemini_3x():
+            return None
+        return types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level=self.thinking_level)
+        )
+
+    # ── 프롬프트 빌더 ─────────────────────────────────────────────────────────
 
     def _get_prompt(self, prompts: dict, key: str, default: str) -> str:
         """DB 프롬프트에서 key를 찾아 반환. 없거나 비어있으면 기본값 반환."""
@@ -149,6 +208,8 @@ class GeminiAIProvider(AIProvider):
             "- transcript는 오디오에서 들리는 내용을 최대한 정확하게 변환하세요."
         )
 
+    # ── File API ──────────────────────────────────────────────────────────────
+
     def _upload_audio_file(self, file_path: str):
         print(f"Gemini File API 업로드 시작: {file_path}")
         uploaded = self.client.files.upload(
@@ -171,10 +232,17 @@ class GeminiAIProvider(AIProvider):
         print(f"파일 ACTIVE 확인: {uploaded.name}")
         return uploaded
 
+    # ── 재시도 포함 generate_content ──────────────────────────────────────────
+
     def _generate_with_retry(self, **kwargs) -> object:
         """
         generate_content()를 재시도 포함해서 호출.
         파일 업로드는 호출 전에 1회만 완료된 상태이므로 generate만 재시도.
+
+        thinking_level 적용 규칙:
+          - 3.x 모델: GEMINI_THINKING_LEVEL 환경변수 값 사용 (기본 "low")
+          - 2.x 이하: config 미전달 (thinking_level 파라미터 미지원)
+          - 외부에서 config 를 직접 전달한 경우: 그대로 사용 (오버라이드 가능)
 
         Returns:
             generate_content 응답 객체
@@ -182,6 +250,15 @@ class GeminiAIProvider(AIProvider):
             Exception : 재시도 횟수 초과 또는 재시도 불가 오류
                         → analyze() → main.py except 에서 failed 상태로 DB 저장
         """
+        # config 미전달 시 모델 버전에 따라 자동 설정
+        if "config" not in kwargs:
+            thinking_config = self._build_thinking_config()
+            if thinking_config is not None:
+                kwargs["config"] = thinking_config
+                print(f"thinking_level 적용: {self.thinking_level} (model={self.model})")
+            else:
+                print(f"thinking_level 미적용: 2.x 이하 모델 (model={self.model})")
+
         last_exception = None
 
         for attempt in range(AI_MAX_RETRIES + 1):  # 0, 1, 2
@@ -229,6 +306,8 @@ class GeminiAIProvider(AIProvider):
                 return code
         return None
 
+    # ── 메인 분석 진입점 ──────────────────────────────────────────────────────
+
     def analyze(
         self,
         categories: list,
@@ -247,6 +326,7 @@ class GeminiAIProvider(AIProvider):
             prompts = {}
 
         if transcript:
+            # ── 텍스트 분석 모드 (STT 결과 있음) ─────────────────────────────
             print("Gemini 텍스트 분석 모드")
             result = self._generate_with_retry(
                 model=self.model,
@@ -255,6 +335,7 @@ class GeminiAIProvider(AIProvider):
             return transcript, json.loads(result.text.strip())
 
         elif file_path:
+            # ── 오디오 File API 처리 모드 (STT_PROVIDER=skip) ─────────────────
             print("Gemini 오디오 File API 처리 모드")
             uploaded_file = None
             try:
