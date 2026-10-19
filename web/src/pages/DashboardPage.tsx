@@ -460,7 +460,8 @@ export default function DashboardPage() {
     const all: VocRow[] = []
     let offset = 0
     for (;;) {
-      const { data, error } = build().range(offset, offset + PAGE_SIZE - 1)
+      // await 필수 — 누락 시 조회를 기다리지 않고 즉시 빈 결과로 종료되어 차트가 비어 보임
+      const { data, error } = await build().range(offset, offset + PAGE_SIZE - 1)
       if (error) { console.error('차트 fetch 오류:', error); break }
       if (!data || data.length === 0) break
       all.push(...(data as unknown as VocRow[]))
