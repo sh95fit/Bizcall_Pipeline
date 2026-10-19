@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
@@ -375,14 +375,23 @@ function DetailPanel({ record, onOpenFull }: { record: VocRecord; onOpenFull: ()
 /* ─── 메인 컴포넌트 ─── */
 export default function DashboardPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   // 날짜 필터 — KST 기준 이번 달 1일 ~ 오늘로 초기화
-  const [dateFrom, setDateFrom]           = useState(thisMonthFirstKST)
-  const [dateTo, setDateTo]               = useState(todayKST)
+  // ★ URL에 저장된 필터가 있으면 그 값을 우선 사용 (새로고침해도 필터 유지)
+  const [dateFrom, setDateFrom] = useState(() => searchParams.get('from') ?? thisMonthFirstKST())
+  const [dateTo, setDateTo]     = useState(() => searchParams.get('to')   ?? todayKST())
 
   // 카테고리·업무폰 필터 — 빈 배열([]) = 전체, 복수 선택 가능
-  const [categoryFilter, setCategoryFilter] = useState<string[]>([])
-  const [phoneFilter, setPhoneFilter]       = useState<string[]>([])
+  // ★ URL ?cats=id1,id2 / ?phones=id1,id2 복원 (새로고침·링크 공유 대응)
+  const [categoryFilter, setCategoryFilter] = useState<string[]>(() => {
+    const v = searchParams.get('cats')
+    return v ? v.split(',').filter(Boolean) : []
+  })
+  const [phoneFilter, setPhoneFilter] = useState<string[]>(() => {
+    const v = searchParams.get('phones')
+    return v ? v.split(',').filter(Boolean) : []
+  })
   const [categories, setCategories]         = useState<Category[]>([])
   const [phones, setPhones]                 = useState<Phone[]>([])
 
@@ -391,6 +400,11 @@ export default function DashboardPage() {
   const [activePhones, setActivePhones]   = useState(0)
   const [vocRows, setVocRows]             = useState<VocRow[]>([])
   const [loading, setLoading]             = useState(true)
+  const [fetchError, setFetchError]       = useState<string | null>(null)
+
+  // 조회 응답 꼬임 방지용 — 필터를 빠르게 여러 번 바꾸면 응답이 순서대로
+  // 도착하지 않을 수 있어, 마지막 요청의 결과만 화면에 반영
+  const fetchSeqRef = useRef(0)
 
   const [selectedDate, setSelectedDate]   = useState<string | null>(null)
   const [drillRecords, setDrillRecords]   = useState<VocRecord[]>([])
@@ -472,7 +486,9 @@ export default function DashboardPage() {
   }
 
   const fetchData = async () => {
+    const seq = ++fetchSeqRef.current   // 이번 요청의 순번
     setLoading(true)
+    setFetchError(null)
     const fromISO  = `${dateFrom}T00:00:00+09:00`
     const toISO    = `${dateTo}T23:59:59+09:00`
     const todayStr = todayKST()
@@ -503,43 +519,70 @@ export default function DashboardPage() {
       return q
     }
 
-    const [
-      { count: tv },
-      { count: tov },
-      { count: ap },
-      rows,
-    ] = await Promise.all([
-      baseQuery(),
-      todayQuery(),
-      supabase.from('phones')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_active', true),
-      // 차트용 rows — 1,000행 제한 우회를 위해 페이지네이션으로 전체 조회
-      fetchAllChartRows(() => {
-        let q = supabase.from('voc_records')
-          .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
-          .eq('is_deleted', false)
-          .order('call_started_at', { ascending: true })   // 페이지네이션 순서 안정화
-          .gte('call_started_at', fromISO)
-          .lte('call_started_at', toISO)
-        if (categoryFilter.length > 0) q = q.in('category_id', categoryFilter)
-        if (phoneFilter.length > 0)    q = q.in('phone_id', phoneFilter)
-        return q
-      }),
-    ])
+    try {
+      const [
+        { count: tv },
+        { count: tov },
+        { count: ap },
+        rows,
+      ] = await Promise.all([
+        baseQuery(),
+        todayQuery(),
+        supabase.from('phones')
+          .select('*', { count: 'exact', head: true })
+          .eq('is_active', true),
+        // 차트용 rows — 1,000행 제한 우회를 위해 페이지네이션으로 전체 조회
+        fetchAllChartRows(() => {
+          let q = supabase.from('voc_records')
+            .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
+            .eq('is_deleted', false)
+            .order('call_started_at', { ascending: true })   // 페이지네이션 순서 안정화
+            .order('id', { ascending: true })                // 2차 정렬: 같은 시각 통화 간 순서 고정 (페이지 건너뛰기 방지)
+            .gte('call_started_at', fromISO)
+            .lte('call_started_at', toISO)
+          if (categoryFilter.length > 0) q = q.in('category_id', categoryFilter)
+          if (phoneFilter.length > 0)    q = q.in('phone_id', phoneFilter)
+          return q
+        }),
+      ])
 
-    setTotalVoc(tv ?? 0)
-    setTodayVoc(tov ?? 0)
-    setActivePhones(ap ?? 0)
-    setVocRows(rows)
-    setLoading(false)
+      // 응답 도착 전에 필터가 또 바뀌었다면 이 결과는 버림 (옛 값 덮어쓰기 방지)
+      if (seq !== fetchSeqRef.current) return
+
+      setTotalVoc(tv ?? 0)
+      setTodayVoc(tov ?? 0)
+      setActivePhones(ap ?? 0)
+      setVocRows(rows)
+    } catch (e) {
+      console.error('대시보드 데이터 조회 오류:', e)
+      if (seq === fetchSeqRef.current) {
+        setFetchError('데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.')
+        setVocRows([])
+        setTotalVoc(0)
+        setTodayVoc(0)
+      }
+    } finally {
+      if (seq === fetchSeqRef.current) setLoading(false)
+    }
   }
 
-  // 날짜 또는 카테고리 필터 변경 시 드릴다운 초기화 후 재조회
+  // 날짜·카테고리·업무폰 필터 변경 시 드릴다운 초기화 후 재조회
   useEffect(() => {
     resetDrill()
     fetchData()
-  }, [dateFrom, dateTo, categoryFilter])
+  }, [dateFrom, dateTo, categoryFilter, phoneFilter])
+
+  // ── 필터 상태를 URL에 저장 (새로고침해도 필터 유지 + 링크 공유 가능) ──
+  useEffect(() => {
+    const next = new URLSearchParams()
+    next.set('from', dateFrom)
+    next.set('to', dateTo)
+    if (categoryFilter.length > 0) next.set('cats', categoryFilter.join(','))
+    if (phoneFilter.length > 0)    next.set('phones', phoneFilter.join(','))
+    const curr = new URLSearchParams(searchParams)
+    if (curr.toString() === next.toString()) return   // 동일하면 재기록하지 않음(무한 루프 방지)
+    setSearchParams(next, { replace: true })
+  }, [dateFrom, dateTo, categoryFilter, phoneFilter, searchParams, setSearchParams])
 
   /* ── 드릴다운 fetch (카테고리 필터 적용) ── */
   const fetchDrillDown = async (dateISO: string) => {
@@ -721,6 +764,8 @@ export default function DashboardPage() {
 
       {loading ? (
         <p className="text-gray-400 text-sm">불러오는 중...</p>
+      ) : fetchError ? (
+        <p className="text-red-500 text-sm text-center py-10">{fetchError}</p>
       ) : (
         <>
           {/* ── 요약 카드 ── */}
