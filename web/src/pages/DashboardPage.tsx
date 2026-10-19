@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -37,6 +37,11 @@ interface VocRecord {
 }
 
 interface Category {
+  id: string
+  name: string
+}
+
+interface Phone {
   id: string
   name: string
 }
@@ -99,6 +104,20 @@ function thisMonthFirstKST(): string {
   return `${y}-${m}-01`
 }
 
+// ── 타임스탬프(UTC)를 KST 날짜 문자열(YYYY-MM-DD)로 변환 ─────────
+// DB의 call_started_at은 TIMESTAMPTZ(UTC)로 저장되므로
+// 문자열을 그대로 slice(0,10) 하면 UTC 날짜가 나옴.
+// KST(한국시간) 기준 날짜로 변환해야 새벽 0~9시 통화가
+// 전날로 잘못 집계되는 문제가 없어짐.
+function kstDate(ts: string): string {
+  const parts = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(ts))
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
 /* ─── 포맷 유틸 ─── */
 const formatDate = (str: string | null) => {
   if (!str) return '-'
@@ -132,6 +151,96 @@ function CategoryBadge({ id, name }: { id: string | null; name: string | null })
     >
       {name}
     </span>
+  )
+}
+
+/* ─── 복수 선택 드롭다운 (체크박스 방식) ────────────────────────
+   - 아무것도 선택하지 않으면 '전체' (필터 미적용)
+   - 항목을 체크하면 해당 항목들만 표시
+   ─────────────────────────────────────────────────────────────── */
+function MultiSelect({ allLabel, options, selected, onChange }: {
+  allLabel: string
+  options: { id: string; name: string }[]
+  selected: string[]
+  onChange: (selected: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  // 드롭다운 밖을 클릭하면 닫기
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const toggle = (id: string) => {
+    onChange(selected.includes(id) ? selected.filter(v => v !== id) : [...selected, id])
+  }
+
+  const buttonLabel = selected.length === 0
+    ? allLabel
+    : selected.length === 1
+      ? options.find(o => o.id === selected[0])?.name ?? '1개 선택'
+      : `${allLabel.replace(/^전체 /, '')} ${selected.length}개 선택`
+  const active = selected.length > 0
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={`border rounded-lg px-2.5 py-1.5 text-sm flex items-center gap-1.5 whitespace-nowrap focus:outline-none focus:ring-2 focus:ring-green-500 ${
+          active
+            ? 'border-green-500 text-green-700 bg-green-50'
+            : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+        }`}
+      >
+        {buttonLabel}
+        <span className="text-gray-400 text-[10px]">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-56 max-h-64 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+          {/* '전체' — 클릭하면 선택 모두 해제(필터 없음) */}
+          <button
+            type="button"
+            onClick={() => { if (selected.length > 0) onChange([]) }}
+            className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 ${
+              selected.length === 0 ? 'text-green-700 font-semibold' : 'text-gray-600'
+            }`}
+          >
+            <span className="w-4 text-center">{selected.length === 0 ? '✔' : ''}</span>
+            전체
+          </button>
+          <div className="border-t border-gray-100 my-1" />
+          {options.length === 0 && (
+            <p className="px-3 py-2 text-xs text-gray-400">옵션이 없습니다</p>
+          )}
+          {options.map(o => {
+            const checked = selected.includes(o.id)
+            return (
+              <button
+                type="button"
+                key={o.id}
+                onClick={() => toggle(o.id)}
+                className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 text-gray-700"
+              >
+                <span className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center text-[10px] ${
+                  checked ? 'bg-green-600 border-green-600 text-white' : 'border-gray-300 bg-white'
+                }`}>
+                  {checked ? '✔' : ''}
+                </span>
+                <span className="truncate">{o.name}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -271,9 +380,11 @@ export default function DashboardPage() {
   const [dateFrom, setDateFrom]           = useState(thisMonthFirstKST)
   const [dateTo, setDateTo]               = useState(todayKST)
 
-  // 카테고리 필터 — 'all' = 전체
-  const [categoryFilter, setCategoryFilter] = useState('all')
+  // 카테고리·업무폰 필터 — 빈 배열([]) = 전체, 복수 선택 가능
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([])
+  const [phoneFilter, setPhoneFilter]       = useState<string[]>([])
   const [categories, setCategories]         = useState<Category[]>([])
+  const [phones, setPhones]                 = useState<Phone[]>([])
 
   const [totalVoc, setTotalVoc]           = useState(0)
   const [todayVoc, setTodayVoc]           = useState(0)
@@ -294,6 +405,16 @@ export default function DashboardPage() {
       .is('parent_id', null)
       .order('sort_order')
       .then(({ data }) => { if (data) setCategories(data) })
+  }, [])
+
+  // ── 업무폰 목록 로딩 (필터 드롭다운용) ────────────────────
+  useEffect(() => {
+    supabase
+      .from('phones')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data }) => { if (data) setPhones(data as unknown as Phone[]) })
   }, [])
 
   // ── 드릴다운 초기화 헬퍼 ──────────────────────────────────
@@ -327,42 +448,57 @@ export default function DashboardPage() {
     return null
   })()
 
-  /* ── 차트·집계 fetch ── */
+  /* ── 차트·집계 fetch ─────────────────────────────────────────
+     ★ 핵심 수정: Supabase는 요청 1회당 최대 1,000행까지만 반환
+     (max_rows = 1000 제한). 이번 달처럼 1,000건을 넘는 기간을
+     조회하면 뒤쪽 날짜(오늘 등) 데이터가 잘려나가
+     "막대바는 1건, 실제 목록은 82건" 현상이 발생함.
+     → 1,000건씩 나눠서(page range) 전부 조회하도록 변경.
+  ───────────────────────────────────────────────────────────── */
+  const fetchAllChartRows = async (build: () => any): Promise<VocRow[]> => {
+    const PAGE_SIZE = 1000
+    const all: VocRow[] = []
+    let offset = 0
+    for (;;) {
+      const { data, error } = build().range(offset, offset + PAGE_SIZE - 1)
+      if (error) { console.error('차트 fetch 오류:', error); break }
+      if (!data || data.length === 0) break
+      all.push(...(data as unknown as VocRow[]))
+      if (data.length < PAGE_SIZE) break   // 마지막 페이지 도달
+      offset += PAGE_SIZE
+    }
+    return all
+  }
+
   const fetchData = async () => {
     setLoading(true)
     const fromISO  = `${dateFrom}T00:00:00+09:00`
     const toISO    = `${dateTo}T23:59:59+09:00`
-    const todayISO = `${todayKST()}T00:00:00+09:00`
-    const todayEndISO = `${todayKST()}T23:59:59+09:00`  // ← 추가
+    const todayStr = todayKST()
+    const todayISO    = `${todayStr}T00:00:00+09:00`
+    const todayEndISO = `${todayStr}T23:59:59+09:00`
 
-    // 카테고리 필터가 적용된 기본 쿼리 빌더
+    // 카테고리·업무폰 필터가 적용된 기본 쿼리 빌더 (count 조회용)
     const baseQuery = () => {
       let q = supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
         .eq('is_deleted', false)
         .gte('call_started_at', fromISO)
         .lte('call_started_at', toISO)
-      if (categoryFilter !== 'all') q = q.eq('category_id', categoryFilter)
+      if (categoryFilter.length > 0) q = q.in('category_id', categoryFilter)
+      if (phoneFilter.length > 0)    q = q.in('phone_id', phoneFilter)
       return q
     }
 
-    // 차트용 rows 쿼리 (카테고리 필터 적용)
-    let chartQuery = supabase.from('voc_records')
-      .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
-      .eq('is_deleted', false)
-      .gte('call_started_at', fromISO)
-      .lte('call_started_at', toISO)
-    if (categoryFilter !== 'all') chartQuery = chartQuery.eq('category_id', categoryFilter)
-
-    // 오늘 VOC 카테고리 필터 적용
-    // 활성 업무폰만 카테고리와 무관한 전체 현황 지표로 유지
+    // 오늘 VOC (활성 업무폰 전체 현황 지표)
     const todayQuery = () => {
       let q = supabase.from('voc_records')
         .select('*', { count: 'exact', head: true })
         .eq('is_deleted', false)
         .gte('call_started_at', todayISO)
         .lte('call_started_at', todayEndISO)
-      if (categoryFilter !== 'all') q = q.eq('category_id', categoryFilter)
+      if (categoryFilter.length > 0) q = q.in('category_id', categoryFilter)
+      if (phoneFilter.length > 0)    q = q.in('phone_id', phoneFilter)
       return q
     }
 
@@ -370,21 +506,31 @@ export default function DashboardPage() {
       { count: tv },
       { count: tov },
       { count: ap },
-      { data: rows, error: chartError },
+      rows,
     ] = await Promise.all([
       baseQuery(),
-      todayQuery(),   // ← 수정
+      todayQuery(),
       supabase.from('phones')
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true),
-      chartQuery,
+      // 차트용 rows — 1,000행 제한 우회를 위해 페이지네이션으로 전체 조회
+      fetchAllChartRows(() => {
+        let q = supabase.from('voc_records')
+          .select('call_started_at, category_id, categories!voc_records_category_id_fkey(name)')
+          .eq('is_deleted', false)
+          .order('call_started_at', { ascending: true })   // 페이지네이션 순서 안정화
+          .gte('call_started_at', fromISO)
+          .lte('call_started_at', toISO)
+        if (categoryFilter.length > 0) q = q.in('category_id', categoryFilter)
+        if (phoneFilter.length > 0)    q = q.in('phone_id', phoneFilter)
+        return q
+      }),
     ])
 
-    if (chartError) console.error('차트 fetch 오류:', chartError)
     setTotalVoc(tv ?? 0)
     setTodayVoc(tov ?? 0)
     setActivePhones(ap ?? 0)
-    setVocRows((rows as unknown as VocRow[]) ?? [])
+    setVocRows(rows)
     setLoading(false)
   }
 
@@ -410,7 +556,8 @@ export default function DashboardPage() {
       .gte('call_started_at', `${dateISO}T00:00:00+09:00`)
       .lte('call_started_at', `${dateISO}T23:59:59+09:00`)
       .order('call_started_at', { ascending: false })
-    if (categoryFilter !== 'all') query = query.eq('category_id', categoryFilter)
+    if (categoryFilter.length > 0) query = query.in('category_id', categoryFilter)
+    if (phoneFilter.length > 0)    query = query.in('phone_id', phoneFilter)
     const { data, error } = await query
     if (!error && data) setDrillRecords(data as unknown as VocRecord[])
     setDrillLoading(false)
@@ -439,7 +586,10 @@ export default function DashboardPage() {
 
     vocRows.forEach(row => {
       if (!row.call_started_at) return
-      const iso     = row.call_started_at.slice(0, 10)
+      // ★ 핵심 수정: DB에는 UTC 시간이 저장되므로 문자열을 그대로
+      // slice(0,10) 하면 UTC 날짜 기준으로 묶임(새벽 0~9시 통화가
+      // 전날로 집계되는 버그). KST 기준 날짜로 변환해서 집계.
+      const iso     = kstDate(row.call_started_at)
       const label   = `${iso.slice(5, 7)}/${iso.slice(8, 10)}`
       const catName = row.categories?.name ?? '미분류'
       catSet.add(catName)
@@ -457,19 +607,28 @@ export default function DashboardPage() {
     return { chartData: data, categoryKeys: keys }
   }, [vocRows])
 
-  const activeCatName = categoryFilter !== 'all'
-    ? categories.find(c => c.id === categoryFilter)?.name
-    : null
+  // 카테고리·업무폰 필터 라벨 (요약 카드·드릴다운 헤더 표시용)
+  const catLabel = categoryFilter.length === 0
+    ? null
+    : categoryFilter.length === 1
+      ? categories.find(c => c.id === categoryFilter[0])?.name ?? null
+      : `카테고리 ${categoryFilter.length}종`
+  const phoneLabel = phoneFilter.length === 0
+    ? null
+    : phoneFilter.length === 1
+      ? phones.find(p => p.id === phoneFilter[0])?.name ?? null
+      : `업무폰 ${phoneFilter.length}대`
+  const activeFilterLabel = [catLabel, phoneLabel].filter(Boolean).join(' · ') || null
 
     const cards = [
       {
-        label: activeCatName ? `기간 내 VOC (${activeCatName})` : '기간 내 전체 VOC',
+        label: activeFilterLabel ? `기간 내 VOC (${activeFilterLabel})` : '기간 내 전체 VOC',
         value: totalVoc,
         unit: '건',
         color: 'text-gray-800',
       },
       {
-        label: activeCatName ? `오늘 VOC (${activeCatName})` : '오늘 VOC',
+        label: catLabel ? `오늘 VOC (${catLabel})` : '오늘 VOC',
         value: todayVoc,
         unit: '건',
         color: 'text-blue-600',
@@ -542,17 +701,20 @@ export default function DashboardPage() {
           {/* 구분선 — 데스크탑만 표시 */}
           <div className="hidden sm:block h-5 w-px bg-gray-200 shrink-0" />
 
-          {/* 카테고리 필터 (상위 카테고리) */}
-          <select
-            value={categoryFilter}
-            onChange={e => setCategoryFilter(e.target.value)}
-            className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          >
-            <option value="all">전체 카테고리</option>
-            {categories.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+          {/* 카테고리 필터 (상위 카테고리, 복수 선택 가능) */}
+          <MultiSelect
+            allLabel="전체 카테고리"
+            options={categories}
+            selected={categoryFilter}
+            onChange={setCategoryFilter}
+          />
+          {/* 업무폰 필터 (복수 선택 가능) */}
+          <MultiSelect
+            allLabel="전체 업무폰"
+            options={phones}
+            selected={phoneFilter}
+            onChange={setPhoneFilter}
+          />
         </div>
       </div>
 
@@ -622,10 +784,10 @@ export default function DashboardPage() {
                       {drillRecords.length}건
                     </span>
                   )}
-                  {/* 카테고리 필터 활성 시 표시 */}
-                  {categoryFilter !== 'all' && (
+                  {/* 카테고리·업무폰 필터 활성 시 표시 */}
+                  {activeFilterLabel && (
                     <span className="text-xs text-gray-400">
-                      · {categories.find(c => c.id === categoryFilter)?.name} 필터 적용 중
+                      · {activeFilterLabel} 필터 적용 중
                     </span>
                   )}
                 </div>
